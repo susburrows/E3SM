@@ -16,6 +16,9 @@ through an allowed production-facing interface, and each concern has an
 executed bounds or invariant violation. Neither classification rests on source
 inspection alone.
 
+The level-zero boundary defect is tracked publicly in
+[MAM4xx issue 564](https://github.com/eagles-project/mam4xx/issues/564).
+
 ## Inspected Revisions
 
 | Repository | Revision |
@@ -26,6 +29,13 @@ inspection alone.
 
 The MAM4xx submodule was clean during the investigation. Existing unrelated
 working-tree changes were preserved.
+
+On 2026-07-15, the current checkout was E3SM revision
+`781c3f5c4cc07f5bc8b5a8d748b0aa923f9b8522`, still using MAM4xx revision
+`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. The relevant EAMxx ACI
+interface, wrapper, MAM4xx defaults, and component-configuration files have no
+changes between the evidence revision and this checkout. The classifications
+below therefore remain applicable to the current source.
 
 Executable evidence used AppleClang on arm64 macOS, double-precision
 `haero::Real`, Kokkos 4.5.1 Serial, `KOKKOS_ENABLE_DEBUG_BOUNDS_CHECK`, AddressSanitizer, and
@@ -125,6 +135,48 @@ extent. A GPU build without bounds checks may not abort; it can instead read
 invalid device memory or use an arbitrary value. That changes the symptom, not
 the invalid index.
 
+### Why production runs can complete
+
+The negative index is evaluated on each L128 MAM4xx ACI call when the active
+loop reaches `k=0`, but optimized production builds normally do not enable
+Kokkos view bounds checking. An address immediately outside a view can remain
+inside mapped GPU memory and therefore need not raise an illegal-address
+exception.
+
+The current allocation pattern can further mask the symptom. `eddy_diff` and
+`csbot` are separate row-major `(ncol,nlev)` scratch views, and `dropmixnuc`
+receives one row subview per column. In a typical unchecked address
+calculation, level `-1` for column `c>0` aliases level `nlev-1` of column
+`c-1`. Because `dropmixnuc` explicitly sets `eddy_diff(nlev-1)=0`, the
+erroneous product often evaluates to zero and accidentally resembles the
+intended upper no-flux boundary. Column zero still addresses memory before the
+allocation, and no valid interface contract permits cross-column aliasing.
+
+### Anticipated propagation
+
+The invalid values directly affect only `eddy_diff_km(0)`. The effective
+column `max_tinv`, `dtmix`, and `nsubmix` are then calculated from that
+coefficient; they are not themselves read out of bounds. Because `nsubmix` is
+a column scalar, a corrupt level-zero coefficient can change the timestep used
+by every active-level update in the explicit loop.
+
+For a finite coefficient, the direct upper-boundary transport term normally
+vanishes: `km1=0`, `overlapm(0)=1`, and the upper-neighbor state difference is
+zero. Expected finite-value outcomes are:
+
+| Invalid value | Anticipated consequence |
+|---|---|
+| Zero, or a value that does not control the column reduction | No visible numerical or performance effect |
+| Spuriously positive and limiting | Excess `nsubmix`, approximately proportional additional explicit-loop work, GPU tail imbalance, and a different finite-step solution throughout the column |
+| Negative and masking the true level-zero loss rate | Too few substeps, possible forward-Euler instability, positivity clipping, artificial sources, and aerosol or droplet-number errors |
+| NaN, infinity, or unmapped address | NaN propagation, pathological integer `nsubmix`, excessive looping, or device failure |
+
+These propagation modes follow from the executed index, equations, and memory
+layout. Their frequency and magnitude in production GPU simulations have not
+been measured. Successful EAMxx runs therefore do not disprove the defect;
+they indicate that the unchecked read has usually been masked or non-limiting
+in those configurations.
+
 ## Concern 2: Disabled Vertical Mixing
 
 ### Reachability and affected fields
@@ -154,6 +206,26 @@ The current switch placement is:
 
 See `externals/mam4xx/src/mam4xx/ndrop.hpp:1321-1408` and `:1415-1435`.
 
+### Cloud-fraction-driven repartitioning outside the switch
+
+The phrase “cloud-fraction transfer” refers to same-level partition changes,
+not transport between vertical levels. Before the explicit substep loop,
+`update_from_newcld` and `update_from_cldn_profile` respond to cloud evolution:
+
+- cloud growth activates an amount `Delta` and applies
+  `I <- I-Delta`, `C <- C+Delta`;
+- cloud shrinkage returns a fraction of cloud-borne aerosol to interstitial;
+  and
+- cloud disappearance applies `I <- I+C`, `C <- 0` and removes cloud-droplet
+  number at that level.
+
+The no-cloud conversion is also repeated after subcycling. These operations
+are local phase repartitioning and, when both paired updates are applied,
+preserve aerosol number or mass in `I+C`. They are not the behavior classified
+as defective. The defect is that with the switch false, the explicit substep
+still advances cloud-borne activation while skipping its paired interstitial
+and droplet-number updates, and it can expose an unwritten destination buffer.
+
 ### Intended paired ledger
 
 For each aerosol constituent `j`, activation supplies opposite source terms:
@@ -173,6 +245,22 @@ L_j = sum_k (pdel(k)/g) * (I_j(k) + C_j(k)).
 Activation cancels in `I+C`, and paired interface fluxes telescope. The
 approved test contract interprets the switch as disabling turbulent transport,
 not as permitting one side of activation to proceed alone.
+
+### Comparison with Fortran EAMv3
+
+The switch-induced imbalance is not present in the E3SM v3.0.0 Fortran
+implementation inspected at revision
+`399d4301138617088dd93214123d6c025e061302`. The Fortran code has no equivalent
+`enable_aero_vertical_mix` option. For every modal number and species-mass
+field, it calls `explmix` once for cloud-borne aerosol with `is_unact=.false.`
+and once for interstitial aerosol with `is_unact=.true.`. The first call applies
+`+source`; the second applies `-source`.
+
+Thus the activation contribution cancels in the combined interstitial plus
+cloud-borne amount, provided neither update is changed by positivity clipping
+and no relevant boundary flux is present. This comparison rules out the same
+asymmetric option-path defect in Fortran EAMv3; it does not establish exact
+conservation for every operation or physical state in that code.
 
 ### Ping-pong state exposure
 
@@ -402,6 +490,11 @@ maintained in
    interstitial tendency application.
 6. Audit whether `dtmin=dtmicro` was intended to cap the Kokkos reduction. If
    so, implement the cap explicitly and add weak/strong-mixing substep tests.
+7. Before interpreting the planned five-day `ne256` subcycle matrix, correct
+   the level-zero boundary or demonstrate an equivalent safe boundary. Then
+   record actual `nsubmix`, a fenced `dropmixnuc` region time, and preferably
+   `max_tinv` with its limiting level. Keep `enable_aero_vertical_mix=true`
+   until the disabled-switch defect is corrected and tested.
 
 ## Related Documentation
 
@@ -411,3 +504,14 @@ maintained in
   subcycling, `wsub`, and SHOC/CLUBB comparison.
 - `docs/analysis/evidence/`: standalone evidence driver and reproduction
   instructions.
+
+## Revision History
+
+| Date | Author / Agent | Change Summary |
+|---|---|---|
+| 2026-07-21 | User / Codex | Recorded MAM4xx issue 564 as the public tracker for the level-zero boundary defect. |
+| 2026-07-21 | User / Codex | Verified against E3SM v3.0.0 that Fortran applies both signs of every activation transfer and does not contain the EAMxx disabled-mixing switch defect. |
+| 2026-07-21 | User / Codex | Clarified the conservative same-level cloud-fraction-driven repartitioning that remains outside the vertical-mixing switch and distinguished it from the disabled-substep defect. |
+| 2026-07-15 | User / Codex | Confirmed applicability to the current checkout, explained why unchecked production runs can complete, documented anticipated subcycling impacts, and connected the defects to the planned five-day performance matrix. |
+| 2026-07-15 | Codex | Added high-activation attribution findings and current-versus-missing diagnostic inventory. |
+| 2026-07-14 | User / Codex | Recorded executed boundary and paired-ledger evidence and assigned both final confirmed-defect classifications. |

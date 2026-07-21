@@ -13,6 +13,7 @@ research problems and Department of Energy mission needs while efficiently using
 
 - [Installation](installation.md)
 - [EAMxx-MAM4xx ndrop Design and Diagnostics](design/eamxx_mam4xx_ndrop.md)
+- [EAMxx-MAM4xx ndrop Cost and Performance Diagnostics](analysis/eamxx_ndrop_aci_cost_report.md)
 - [EAMxx-MAM4xx ndrop Technical Brief](analysis/eamxx_mam4xx_ndrop_defect_brief.md)
 - [User Guide](user-guide/index.md)
 - [Development](dev-guide/index.md)

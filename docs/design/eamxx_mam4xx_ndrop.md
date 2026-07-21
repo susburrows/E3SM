@@ -247,6 +247,32 @@ interface mixing rate before subcycling. Whether the ineffective
 two primary classifications, but the test matrix must cover one, even, and odd
 substep counts because buffer exposure depends on parity.
 
+### Fortran EAMv3 explicit mixing subloop
+
+The Fortran EAMv3 implementation also uses an adaptive explicit mixing
+subloop. For each column, `dropmixnuc`:
+
+1. reads the turbulence diffusivity `kvh` and forms the interface diffusivity
+   `ekd`, normally limited to `[0.01,100] m2 s-1`;
+2. replaces `ekd` at diagnosed cloud bases with `wbar/zs`;
+3. forms the density-weighted interface coefficients `ekk`, with explicit zero
+   values above and below the active column;
+4. calculates `tinv=ekkp+ekkm`, `dtmix`, and `nsubmix`; and
+5. executes `do n=1,nsubmix`, updating droplet number and every cloud-borne and
+   interstitial aerosol number and mass field with `explmix`.
+
+The Fortran call receives `dtmicro=deltatin` from `microp_aero`. Its
+`nsubmix_bnd=min(nsubmix,100)` value only selects a diagnostic histogram bin;
+the actual loop still runs the full `nsubmix` count. The substeps remain
+sequential because each substep uses the aerosol state produced by the
+previous one. Vertical levels are expressed as Fortran array operations and
+loops rather than EAMxx Kokkos team/vector ranges.
+
+Thus explicit mixing subcycling was inherited from Fortran; it was not
+introduced by the C++ port. Important port differences include the C++
+boundary representation, Kokkos execution structure, and the EAMxx
+`enable_aero_vertical_mix` option.
+
 ### Vertical indexing and boundaries
 
 Most active-level loops use the half-open Kokkos range
@@ -306,11 +332,45 @@ substeps and final tendency construction can read the swapped buffer. Existing
 validation fixtures initialize both buffers, which does not reproduce this
 production initialization pattern.
 
-New-cloud activation and cloud-decay transfers occur outside the switch-guarded
-explicit calls. Therefore, the switch does not disable every aerosol transfer
-performed by `dropmixnuc`; it conditionally suppresses only selected explicit
-updates. The intended contract for this partial disabling is not stated in the
-interface or namelist documentation.
+Cloud-fraction-driven same-level repartitioning occurs outside the
+switch-guarded explicit calls. This is not vertical transport. For each paired
+interstitial/cloud-borne constituent `(I,C)` at one model level:
+
+- when cloud fraction grows by more than `0.01`, activation computes a positive
+  amount `Delta` and applies `I <- I-Delta`, `C <- C+Delta`;
+- when cloud fraction shrinks, a fraction of `C` is returned with the same
+  paired form but `Delta<0`; and
+- when cloud is absent, the code applies `I <- I+C`, `C <- 0` and removes the
+  corresponding cloud-droplet number.
+
+Before positivity clipping or the disabled-buffer defect, these local paired
+operations preserve `I+C`. They remain active when
+`enable_aero_vertical_mix=false` because the switch guards selected explicit
+neighbor-mixing updates, not all activation and cloud-phase repartitioning in
+`dropmixnuc`. Retaining conservative local repartitioning while disabling
+turbulent transport is physically coherent; the confirmed defect is that the
+substep loop retains the cloud-borne `+S` update while suppressing its paired
+interstitial `-S` and droplet-number updates and can read an unwritten ping-pong
+buffer.
+
+### Comparison with Fortran EAMv3
+
+The same switch-induced defect is not present in the E3SM v3.0.0 Fortran
+implementation inspected at revision
+`399d4301138617088dd93214123d6c025e061302`. That implementation has no
+`enable_aero_vertical_mix` option. For every modal number and species-mass
+field, it calls `explmix` for both aerosol forms using the same activation
+amount:
+
+- the cloud-borne call uses `is_unact=.false.` and adds the activation amount;
+- the interstitial call uses `is_unact=.true.` and subtracts the activation
+  amount.
+
+The activation terms therefore cancel in `I+C` when both updates remain
+positive and there are no relevant boundary fluxes. Positivity clipping can
+still alter exact conservation if an update would otherwise become negative,
+but EAMv3 does not contain the EAMxx option path that applies only the
+cloud-borne increase.
 
 ## Module and Interface Design
 
@@ -1078,6 +1138,9 @@ diagnostic overhead, but it is not part of the current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-07-21 | User / Codex | Documented the adaptive explicit vertical-mixing subloop in Fortran EAMv3 and its main differences from the EAMxx Kokkos implementation. |
+| 2026-07-21 | User / Codex | Verified that E3SM v3.0.0 Fortran applies both signs of each activation transfer and does not contain the EAMxx disabled-mixing switch defect. |
+| 2026-07-21 | User / Codex | Clarified that “cloud-fraction transfer” means same-level interstitial/cloud-borne repartitioning during cloud growth, decay, or disappearance, not vertical transport. |
 | 2026-07-15 | Codex | Documented the explicit `eddy_diff_heat` to interface diffusivity to `tinv`/`nsubmix` path and the cloud-base override that can supersede it. |
 | 2026-07-15 | User / Codex | Restricted the current experiment plan to matched five-day runs, removed separate extended and focused-output streams, and set existing `ndrop` context to identical hourly instantaneous output. |
 | 2026-07-15 | Codex | Documented the source-traced `w_variance` to `wsub` to `wtke` calculation, the hard-coded activation-velocity floor, the diagnostics missing for EAMxx-versus-EAMv3 causal attribution, and the comprehensive existing-output field/cadence contract; no implementation code was changed. |
