@@ -1,0 +1,21 @@
+Forward Euler remediation validation
+Date: 2026-07-30
+
+Sanitizer configuration:
+  Apple clang 21.0.0, arm64 macOS
+  -std=c++17 -O0 -g -fsanitize=address,undefined
+  -fno-omit-frame-pointer
+
+Sanitizer output:
+CONVERGENCE case=fe_diffusion order_range=1.00004:1.00004 min_r2=1
+CONVERGENCE case=fe_activation_all_fields order_range=1.00555:1.00702 min_r2=0.999998
+RESULT passed=20899 failed=0
+
+Optimized configuration:
+  Apple clang 21.0.0, arm64 macOS
+  -std=c++17 -O3 -DNDEBUG
+
+Optimized output:
+CONVERGENCE case=fe_diffusion order_range=1.00004:1.00004 min_r2=1
+CONVERGENCE case=fe_activation_all_fields order_range=1.00555:1.00702 min_r2=0.999998
+RESULT passed=20899 failed=0

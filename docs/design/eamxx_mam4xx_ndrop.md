@@ -30,6 +30,39 @@ No production-physics modification is authorized by this document. The
 validation plan was approved before investigation-specific test code was
 written or executed.
 
+The proposed isolated Forward Euler, IMEX, and Backward Euler comparison below
+is a new numerical-method design that was **approved on 2026-07-23**. This
+approval authorizes the staged standalone test and validation work described
+below; it does not authorize production implementation.
+
+> **[VALIDATION-GATE REMEDIATION AMENDMENT — approved 2026-07-30]**
+>
+> An independent review reran and examined the Forward Euler and IMEX gates
+> and assigned both a `FAIL`. The numerical formulations were judged sound in
+> their tested normal-magnitude regime, but the standalone state transition
+> omitted the current MAM4xx zero-cloud resuspension/reset, finite-input
+> overflow could produce nonfinite diagnostics without failure, and parts of
+> the already-approved convergence and per-field clipping test contract were
+> not implemented. The user approved the remediation contract on 2026-07-30.
+> Backward Euler remains blocked until both remediated gates pass.
+
+### Phase 0 design gate
+
+This document is Phase 0 / the design gate of the **Isolated `ndrop`
+Integrator Validation and Performance Plan**. Once approved, it is intended to
+enable the later harness and Forward Euler phase, IMEX gate, Backward Euler
+gate, cross-scheme validation, performance evaluation, and final report. Phase
+0 supplies the canonical operator equations, boundary and indexing contracts,
+column invariants and ledgers, and the classification contract for the two
+originally suspected behaviors: `top_lev` boundary indexing and disabled
+vertical mixing.
+
+This Phase 0 approval would authorize only the separate standalone test plan.
+Any future production implementation of IMEX or Backward Euler must reference
+this design and the Isolated `ndrop` Integrator Validation and Performance Plan
+and must pass a separate production design and review gate before entering an
+EAMxx or MAM4xx production path.
+
 The focused results and recommendations are summarized in
 `docs/analysis/eamxx_mam4xx_ndrop_defect_brief.md`.
 
@@ -784,6 +817,535 @@ Final classifications for the two requested concerns are:
   enabled control conserved them, and it separately demonstrated dependence on
   the unwritten destination buffer.
 
+## Proposed Isolated Time-Integrator Study
+
+> **[STANDALONE NUMERICAL EXPERIMENT - APPROVED 2026-07-23]**
+
+This first phase is a simple standalone screening study that can run locally on
+the development Mac. It will compare the current adaptive Forward Euler
+implementation with an IMEX method and Backward Euler for the
+`update_from_explmix` state advance and supporting coefficient assembly. It
+does not change production source, activation physics, cloud-fraction
+evolution outside this routine, or EAMxx coupling.
+
+The purpose is initial evidence: verify the methods, establish first-order
+behavior, measure positivity clipping and its conservation error, and obtain
+CPU timing and operation-count estimates. This phase will not claim GPU or
+whole-model performance. GPU implementation and profiling are deferred until
+the local results justify that work.
+
+The study baseline is E3SM revision
+`e12e7d61dba924717e8f35fe8288247c1766ee30` with MAM4xx revision
+`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. Generated builds and results must
+use a short unsynchronized path under `/private/tmp`; no build or run tree may
+be created in the OneDrive source tree.
+
+### Numerical contract: operator and integrator
+
+The **operator** is the fixed set of vertical mixing coefficients, cloud-
+overlap factors, activation sources, and explicit no-flux boundaries embodied
+in the approved explicit equations above. The **integrator** is the method used
+to advance that operator through time; changing an integrator in the isolated
+comparison must not silently change the operator.
+
+The canonical current-MAM4xx **state transition** also includes a common
+post-integration zero-cloud operation that is separate from the continuous
+operator and from the choice of integrator. After the final Forward Euler
+substep or implicit solve, every level whose current cloud fraction is exactly
+zero must:
+
+\[
+N_{c,k}\leftarrow 0,\qquad
+I_{j,k}\leftarrow I_{j,k}+C_{j,k},\qquad
+C_{j,k}\leftarrow 0
+\quad\text{for all }j.
+\]
+
+This operation reproduces `update_from_explmix` and preserves every aerosol
+ledger \(L_j\). It must be applied identically after Forward Euler, IMEX, and
+Backward Euler. Exact-current comparisons must include columns containing
+isolated zero-cloud levels and contiguous zero-cloud regions. Analytic
+convergence cases must use strictly positive cloud fractions so this
+non-smooth projection is not mistaken for time-integration error; zero-cloud
+behavior is validated separately as an exact state-transition and ledger
+property. IMEX and Backward Euler positivity checks apply to the raw solved
+state before this operation so resuspension or reset cannot hide a materially
+negative candidate solution.
+
+- **Forward Euler** treats vertical mixing, cloud-to-interstitial return, and
+  activation explicitly at the saved substep state and uses the production
+  adaptive subcycling.
+- **IMEX** treats activation explicitly at the old state while treating
+  vertical mixing and cloud-to-interstitial return implicitly.
+- **Backward Euler** treats vertical mixing, cloud-to-interstitial return, and
+  activation implicitly at the new state.
+
+### Scope and canonical test operator
+
+The primary comparison will reproduce the current C++ semi-discrete equations,
+including behavior that may later be corrected independently. This isolates
+the time integrator as the only intended algorithmic difference.
+
+Let \(L_C\) be the cloud-overlap-weighted mixing operator used for cloud-borne
+aerosol and droplet number, \(L_I\) the full-overlap interstitial mixing
+operator, and \(R\) the return of cloud-borne material mixed into non-cloudy
+air. For aerosol constituent \(j\), let \(S_j(I_j,C_j)\) be the current C++
+activation transfer and let \(S_N(I,C)\) be the droplet-number source. With
+mixing coefficients, overlap, and activation rates frozen over one ACI call,
+the equations are
+
+\[
+\frac{dC_j}{dt}=L_C C_j+S_j(I_j,C_j),
+\]
+
+\[
+\frac{dI_j}{dt}=L_I I_j+R C_j-S_j(I_j,C_j),
+\]
+
+\[
+\frac{dN_c}{dt}=L_C N_c+S_N(I,C).
+\]
+
+For all non-bottom active levels, the current source has the form
+\(S_{j,k}=a_{j,k}I_{j,k+1}\). Modal number uses `nact`; species mass uses
+`mact`. At the bottom level, the current C++ implementation uses `nact` for
+both number and mass and forms a source proportional to \(I_{j,k}+C_{j,k}\).
+The inspected Fortran implementation instead uses `mact` for mass and includes
+an additional cloud-borne loss term. The primary experiment must retain the
+current C++ formula. A separate, non-gating `mact`-at-bottom sensitivity may be
+reported, but it must not be described as complete Fortran equivalence.
+
+The canonical test operator will receive one nonnegative exchange coefficient
+per physical interface and explicit zero-flux top and bottom boundaries. For
+pressure weight \(w_k=\Delta p_k/g\), the cell rates must be derived from the
+shared interface coefficient so that
+
+\[
+w_kD_k^+=w_{k+1}D_{k+1}^-.
+\]
+
+The cloud-borne, interstitial, and cloud-to-interstitial return operators must
+all be assembled from these same interface data and overlap factors. This
+prevents a standalone test from accidentally constructing a nonconservative
+operator. An input that supplies incompatible cell rates must fail validation.
+
+The harness must not reproduce the known `eddy_diff(-1)` access.
+Exact-current-function comparison is restricted to a safe active range such
+as `top_lev=1`; successful isolated tests must not be reported as validation of
+the defective production `top_lev=0` path.
+
+### Test-only interface
+
+No new production API is proposed. The isolated harness will expose the
+conceptual interface
+
+```text
+advance(method, state, operator_data, dt) -> advance_result
+```
+
+where:
+
+| Item | Contents and contract |
+|---|---|
+| `method` | `forward_euler`, `imex`, or `backward_euler` |
+| `state` | `N_c[nlev]`, `I[25][nlev]`, and `C[25][nlev]`; finite and nonnegative on input |
+| `operator_data` | Shared interface exchange coefficients, overlap, pressure weights, capped `nact`/`mact`, mode map, and explicit boundary conditions |
+| `dt` | Positive ACI interval in seconds |
+| `advance_result` | New state, status, executed substeps, limiter count, per-field raw minima and clipping diagnostics, normalized residual, and normalized ledger error |
+
+Invalid dimensions, nonfinite values, negative mixing or activation rates,
+incompatible interface rates, invalid boundaries, and nonpositive `dt` must
+return a deterministic failure before a solve. Finite inputs whose derived
+coefficients, sources, matrix entries, right-hand sides, solutions, weighted
+ledgers, residual norms, or normalizations overflow or otherwise become
+nonfinite must return a deterministic failure at the point of detection.
+Success therefore means that the complete state and every reported diagnostic
+are finite. The implementation must not use comparisons or maximum reductions
+that silently convert a NaN diagnostic into an apparently acceptable zero.
+
+### Positivity and clipping
+
+In summary, Forward Euler reproduces production subcycling and clipping,
+whereas test-only IMEX and Backward Euler do not clip and report material
+negative values as positivity failures.
+
+Nonnegative physical state is a strict requirement. Forward Euler must
+reproduce the production subcycling and componentwise `max(0,qnew)` clipping
+semantics exactly, including the existing activation-rate limiter and clipping
+after every explicit substep. It must retain the raw pre-clipping result for
+diagnosis.
+
+IMEX and Backward Euler are test-only schemes and **must not silently clip**.
+Negative values consistent with the declared roundoff tolerance are acceptable
+and remain visible in diagnostics; larger negative values are reported as
+positivity failures for that method and case.
+
+For Forward Euler, record the raw minimum, count of clipped values, and
+weighted negative deficit for every field. For aerosol constituent \(j\),
+record the ledger change introduced only by clipping,
+
+\[
+\Delta L_{j,clip}=\sum_k w_k\left[(I_{j,k}^{clip}+C_{j,k}^{clip})
+ -(I_{j,k}^{raw}+C_{j,k}^{raw})\right],
+\]
+
+as well as the total pre-to-post ledger change. When clipping is inactive,
+activation plus no-flux mixing must preserve the pressure-weighted column
+ledger \(L_j\). When production Forward Euler clipping is active, its
+contribution is reported separately and is not classified as an operator or
+paired-transfer defect. No downstream or global fixer is assumed in this
+standalone phase. Whether EAMxx later masks or redistributes these errors is a
+separate source-tracing and coupled-model TODO.
+
+### Forward Euler reference
+
+Forward Euler will retain the production calculation of `nsubmix`, use
+\(\Delta t_m=\Delta t/n_{submix}\), recompute the state-dependent activation
+source each substep, alternate old/new buffers, and apply componentwise
+`max(0,qnew)` clipping. A separate unclipped fixed-step Forward Euler path may
+be used only to measure convergence in smooth cases known to remain positive.
+
+The canonical Forward Euler implementation must agree with the exact current
+C++ function for safe boundaries, one, even, and odd substep counts, and both
+limiter-active and limiter-inactive cases before either candidate method is
+implemented.
+
+### IMEX definition
+
+IMEX evaluates activation from the old state and treats vertical mixing and
+cloud-to-interstitial return implicitly:
+
+\[
+(I-\Delta t L_C)C_j^{n+1}=C_j^n+\Delta t S_j(I_j^n,C_j^n),
+\]
+
+\[
+(I-\Delta t L_I)I_j^{n+1}=I_j^n-\Delta t S_j(I_j^n,C_j^n)
+ +\Delta t R C_j^{n+1},
+\]
+
+\[
+(I-\Delta t L_C)N_c^{n+1}=N_c^n+\Delta t S_N(I^n,C^n).
+\]
+
+The cloud-borne and droplet systems share one scalar tridiagonal matrix; the
+interstitial fields share a second. The implementation must factor or reduce
+each shared matrix once per column and apply it to all relevant right-hand
+sides. Local execution will use EKAT Thomas. A later GPU phase may evaluate
+EKAT cyclic reduction after the standalone screen is complete.
+
+This IMEX method is not assumed to produce a nonnegative raw state because its
+activation transfer is explicit. A material negative result is a reported
+positivity failure; it is not replaced by a clipped test result.
+
+### Backward Euler definition
+
+Backward Euler treats mixing, cloud-to-interstitial return, and activation at
+the new time level:
+
+\[
+C_j^{n+1}=C_j^n+\Delta t\left[L_C C_j^{n+1}
+ +S_j(I_j^{n+1},C_j^{n+1})\right],
+\]
+
+\[
+I_j^{n+1}=I_j^n+\Delta t\left[L_I I_j^{n+1}+R C_j^{n+1}
+ -S_j(I_j^{n+1},C_j^{n+1})\right].
+\]
+
+Each aerosol pair therefore forms a 2-by-2 block-tridiagonal system. Modal
+number fields share matrices by `nact`; species fields share matrices by mode
+and `mact`, except for the retained current-C++ bottom source. After solving
+the four aerosol-number pairs, droplet number is advanced with
+
+\[
+(I-\Delta t L_C)N_c^{n+1}=N_c^n+\Delta t S_N(I^{n+1},C^{n+1}).
+\]
+
+A host block-Thomas implementation is the local correctness and timing
+baseline. It must agree with an independently coded dense partial-pivoting
+solve for small systems. If the implicit bottom source changes the active
+branch of the current `max(0,tmpa)` expression or produces a negative combined
+`I+C` state, the case must be reported as outside the simple linear solve or as
+a positivity failure rather than silently changing the equation. A block
+cyclic-reduction GPU solver is deferred.
+
+### Algebraic invariants
+
+For pressure weights \(w_k=\Delta p_k/g=1/z_{n,k}\), coefficient assembly must
+demonstrate the weighted cancellation
+
+\[
+\sum_k w_k\left[(L_C C)_k+(L_I I)_k+(R C)_k\right]=0.
+\]
+
+Because the same \(S_j\) enters the paired equations with opposite signs, each
+raw, unclipped method must preserve
+
+\[
+\sum_k w_k(I_{j,k}+C_{j,k})
+\]
+
+for all 25 aerosol constituents under zero-flux boundaries. The proof must be
+mapped to matrix coefficients and supplemented by randomized tests constructed
+from compatible shared-interface coefficients. Production Forward Euler
+clipping may break this invariant, but its contribution must be isolated with
+\(\Delta L_{j,clip}\); IMEX and Backward Euler must report a positivity failure
+instead of modifying the raw ledger through clipping.
+
+### Validation and acceptance (high level)
+
+Validation will exercise identity and zero operators, uniform-state
+preservation, analytic no-flux diffusion modes, and simple activation-transfer
+cases. Forward Euler, IMEX, and Backward Euler are each expected to show
+first-order convergence under timestep refinement and to satisfy tight solver-
+residual and column-ledger tolerances. Detailed cases and numerical thresholds
+are defined in the separate validation plan.
+
+These criteria apply equally to all three methods. A method that has not passed
+its own validation gate cannot be used either to validate another method or to
+reject another method on accuracy or performance grounds.
+
+### Known defects and excluded cases
+
+**The known `top_lev=0` and disabled-vertical-mixing defect paths are excluded
+from successful numerical validation.**
+
+The production-reachable `top_lev=0` invalid boundary access and the defective
+`enable_aero_vertical_mix=false` path are known defects, not successful
+validation cases. Tests may reproduce them as expected-failure evidence, but
+excluded paths must never be counted as passing numerical validation.
+
+These cases and their classifications are documented in
+[`docs/analysis/eamxx_mam4xx_ndrop_defect_brief.md`](../analysis/eamxx_mam4xx_ndrop_defect_brief.md).
+This design must remain consistent with that brief as either artifact is
+updated.
+
+### Validity domain and regimes
+
+The operator and ledger definitions are intended to apply from small isolated
+columns through large level counts including typical L128-like columns, across
+cloud-overlap values from zero through fractional overlap to full overlap, and
+from typical turbulence to strong-mixing and cloud-base regimes. Validation
+must demonstrate that the equations, explicit no-flux boundaries, and ledger
+accounting remain meaningful throughout these qualitative regimes; known
+defective interfaces remain excluded as stated above.
+
+### Staged implementation and review gates
+
+Implementation may advance only through these gates:
+
+1. **Design approval:** approve this section before any prototype code.
+2. **Harness and Forward Euler gate:** establish exact-current-function
+   agreement under safe boundaries and independently review signs, indexing,
+   units, source selection, clipping, and buffer parity.
+3. **IMEX gate:** complete code review and pass the entire numerical validation
+   suite before beginning Backward Euler.
+4. **Backward Euler gate:** validate block Thomas against the independent dense
+   solve, review the coupled matrices, and pass the suite before cross-scheme
+   comparison.
+5. **Cross-scheme freeze:** all three schemes must pass from one revision in
+   debug/sanitizer and optimized local configurations before CPU timing.
+6. **Local screening report:** complete accuracy, clipping, conservation, and
+   CPU timing comparisons before deciding whether to begin a GPU phase.
+
+When a gate fails, subsequent implementation stops until the defect is fixed,
+the design is updated if necessary, and the failed gate is rerun. Optimization
+after a gate requires rerunning that scheme's complete validation suite.
+
+The original local runs reported the Forward Euler and IMEX gates as passed on
+2026-07-28. An independent review on 2026-07-29 reran both suites and confirmed
+the reported normal-regime assertion counts and convergence results, but
+assigned both gates a `FAIL`. Reviewer-created tests demonstrated that the
+standalone state transition disagreed with current MAM4xx at zero-cloud levels
+and that finite, extreme-magnitude inputs could yield nonfinite ledger or
+residual diagnostics without a failure. The review also confirmed that the
+Forward Euler artifact lacked its required analytic and coupled convergence
+suite, the IMEX activation oracle did not exercise all aerosol fields, neither
+gate implemented the required coupled all-field convergence case, and Forward
+Euler clipping diagnostics were not fully per-field. The remediation suite
+passed in debug/sanitizer and optimized local configurations on 2026-07-30,
+including exact-current zero-cloud comparisons. The Forward Euler and IMEX
+gates await independent re-review before they can be re-approved. Backward
+Euler has not begun. Executed evidence is recorded in
+[`docs/analysis/evidence/ndrop_integrator/README.md`](../analysis/evidence/ndrop_integrator/README.md).
+
+### Accuracy and convergence validation
+
+Validation uses all 25 aerosol pairs and droplet number and includes:
+
+- zero-operator identity and uniform-state preservation with full cloud
+  overlap; fractional-overlap cases instead require the combined aerosol
+  ledger invariant;
+- exact-current zero-cloud resuspension/reset for isolated zero-cloud levels,
+  contiguous zero-cloud regions, and zero-overlap profiles;
+- an analytic discrete no-flux diffusion mode applied independently to all 51
+  fields;
+- analytic activation-transfer cases that exercise droplet number, all four
+  modal-number pairs, and every species-mass pair through the appropriate
+  mode-specific activation coefficient;
+- a representative coupled self-convergence comparison in which all methods
+  approach the same timestep-refined solution, with nonuniform mixing,
+  fractional but strictly positive cloud overlap, activation in every mode,
+  and nonzero state in all 51 fields;
+- overlap values zero, fractional, and one;
+- level counts 1, 2, 3, 127, and 128;
+- documented typical and strong/cloud-base mixing profiles;
+- one, even, and odd Forward Euler substep counts; and
+- invalid inputs, solver failure, positivity failure, and limiter-active cases.
+
+Finite-value failure tests must separately cover nonfinite input rejection and
+overflow or contamination in derived coefficients, activation sources,
+matrices, right-hand sides, solutions where constructible, ledgers, residuals,
+and normalizations. If the approved M-matrix contract makes a nonfinite
+solution impossible from finite matrix and right-hand-side values, a focused
+test of the solution checker may be used instead of fabricating an invalid
+physical operator. Every such case must return a deterministic non-success
+status and a diagnostic identifying the failed stage. At least one IMEX
+residual test must construct the residual directly from the shared physical
+interface coefficients rather than reusing the tridiagonal coefficients
+assembled for the solver.
+
+RK4 is not a candidate method and is not required for this initial phase. The
+analytic diffusion and activation cases establish formal order. The coupled
+case uses three-level self-convergence,
+
+\[
+p=\log_2\left(\frac{\lVert q_h-q_{h/2}\rVert}
+ {\lVert q_{h/2}-q_{h/4}\rVert}\right),
+\]
+
+plus agreement among the methods at the finest timestep. An independent
+higher-order reference may be added later only if the analytic and
+self-convergence evidence disagree or cannot identify the asymptotic range.
+
+Use at least four timestep halvings and fit the three finest points that remain
+above roundoff. In no-clipping cases, both normalized weighted-L1 and
+L-infinity errors must demonstrate first-order convergence with fitted slope
+in `[0.85,1.15]` and `R^2 >= 0.98`. Formal order is not required after clipping
+activates because the non-smooth projection can change it; those cases instead
+report raw error, clipped error, and ledger impact.
+
+Errors must be normalized separately for every field; dimensional aerosol
+mass, aerosol number, and droplet number must never be summed into one norm.
+For field \(j\), define
+
+\[
+E_{1,j}=\frac{\sum_k w_k|q_{j,k}-q_{j,k}^{ref}|}
+ {\max(\sum_k w_k|q_{j,k}^{ref}|,\sum_k w_k|q_{j,k}^{0}|)},
+\]
+
+\[
+E_{\infty,j}=\frac{\max_k|q_{j,k}-q_{j,k}^{ref}|}
+ {\max(\max_k|q_{j,k}^{ref}|,\max_k|q_{j,k}^{0}|)},
+\]
+
+Convergence cases must initialize every assessed field with a nonzero norm so
+these denominators are defined. Tests whose exact state is identically zero
+use the separately declared absolute roundoff tolerance rather than a relative
+error. Report every field, category maxima, and the maximum across fields.
+Pass/fail and matched-error screening use the maximum field-relative error.
+
+For analytic cases, \(q^{ref}\) is the exact solution. For the coupled case,
+do not designate one candidate method as truth. After first-order
+self-convergence and finest-step cross-method agreement are established, use
+the first-order Richardson estimate
+
+\[
+\widehat E_{h,j}=\lVert q_{h,j}-q_{h/2,j}\rVert/(2^1-1)
+\]
+
+as the screening error estimate for runtime-versus-error curves. Do not report
+a matched-error comparison for a Forward Euler timestep at which clipping
+occurs or for an IMEX or Backward Euler timestep that has a positivity failure.
+For those cases, report the Forward Euler raw/clipped difference and ledger
+change or the candidate raw negative state and failure status, respectively.
+
+For each field in the finest no-clipping coupled case, the difference between
+any two methods must decrease under refinement and must not exceed twice the
+larger of their Richardson error estimates. Otherwise the methods have not
+demonstrated convergence to a common solution and the cross-scheme gate fails.
+
+Normalized linear-solver residuals must be at most `1e-11` in double precision
+and `5e-6` in single precision. With `eps` equal to the configured `Real`
+machine epsilon, normalized ledger error must not exceed
+`max(ledger_floor, 5*nlev*eps)`, where `ledger_floor` is `1e-11` for double and
+`1e-6` for single precision. A raw negative value is significant when its
+magnitude exceeds `10*eps` times the larger of the field's maximum initial and
+maximum raw absolute values. All raw negatives are counted in the positivity
+diagnostics; Forward Euler additionally records the amount changed by clipping.
+Forward Euler must retain separate raw minima, clipping counts, and weighted
+deficits for droplet number and for each interstitial and cloud-borne aerosol
+field. Clipping-active tests must verify those per-field values and the
+resulting clipping-only ledger change. The suite must seek an admissible
+production-adaptive clipping case rather than relying only on a forced unstable
+step. If the approved rate and subcycling constraints make adaptive clipping
+unreachable, the evidence must state and test that property and retain the
+forced-step case only as a diagnostic-unit test.
+
+Required configurations are a double-precision CPU debug/sanitizer build and
+an optimized local Mac build using the available Kokkos backend. The optimized
+executable used for timing must rerun the numerical acceptance suite.
+Gate evidence must record exact source and dependency revisions, compiler and
+flags, commands, pass/fail output, and hashes of retained result files. The
+design, harness sources, tests, and evidence record must be committed together
+as one coherent revision before either remediated gate is declared passed.
+
+### Local performance-screening contract
+
+The primary local timed region includes every operation needed to replace the
+explicit update: coefficient and source assembly, activation-rate limiting,
+matrix assembly, copies required because a solver overwrites coefficients,
+factorization, all right-hand-side solves, method-required positivity handling,
+state updates, and required Kokkos fences. Detailed Forward Euler clipping and
+ledger diagnostics are collected in a separate instrumented pass. A matched
+instrumentation-off/on run must report their overhead. Subtimers may separate
+assembly, solve, and positivity-handling cost, but only the complete
+uninstrumented advance supports a local CPU speedup estimate.
+
+Benchmark one column and batches of 16, 64, 256, and 1024 columns; Forward
+Euler `nsubmix` values 1, 2, 3, 5, 8, 16, and 21; and ACI intervals 33.33, 50,
+75, 100, 150, and 300 s. Use identical active levels, inputs, and production-
+feasible layouts for all methods. Homogeneous batches may control the workload
+but must not reuse one column's matrix or factorization across columns. Any
+layout conversion or host/device staging required by one method belongs inside
+its timed region.
+
+Use at least 10 untimed warmups and 30 measured repetitions. Continue to at
+most 100 repetitions until the bootstrap 95% confidence-interval half-width
+for the median is below 5%. Report complete-region time per column-call,
+assembly, solve and positivity-handling time, memory/workspace, operation
+counts, result status, and speedup relative to Forward Euler. Candidate
+positivity checks must be timed; candidate clipping is prohibited.
+
+For equal-interval timing, assemble coefficients once and advance every method
+over the same frozen ACI interval. For timestep-refined or matched-error
+timing, retain the same frozen operator, assemble it once, and include every
+repeated integration step and its method-required positivity handling in the
+timed region. This is an internal-integrator comparison and must not be
+represented as changing the outer MAC/ACI subcycle count, which would re-run
+other physics and rebuild the operator.
+
+Synthetic L128 typical and strong profiles are sufficient for this screening
+phase. Local batching, right-hand-side concurrency, operation counts, workspace
+size, and sequential vertical depth can indicate whether a method is worth a
+GPU implementation, but CPU timing cannot emulate GPU occupancy, warp behavior,
+memory bandwidth, or synchronization cost. No result from this phase may be
+labeled GPU performance. Production relevance requires sampled EAMxx columns
+and later profiling on a representative GPU.
+
+### Open issues for the proposed study
+
+| Issue | Required decision or evidence | Interim treatment | Blocks |
+|---|---|---|---|
+| Numerical-method design | Approved by the user on 2026-07-23 | Follow the staged review gates below | Resolved for standalone prototype code |
+| Bottom mass source | MAM4xx physics-owner decision on C++ versus intended formulation | Current C++ primary; note as active TODO | Production adoption only |
+| `top_lev=0` defect | Fix and bounds/ledger regression evidence | Explicit safe boundaries; exact-function comparison at `top_lev=1` | Production integration, not isolated study |
+| Disabled-mixing defect | Fix and paired-ledger regression evidence | Keep `enable_aero_vertical_mix=true` | Disabled-mode and production integration |
+| Downstream fixer behavior | Trace whether EAMxx later masks or redistributes Forward Euler clipping errors | Report standalone Forward Euler raw and clipped ledgers with no fixer | Coupled scientific interpretation only |
+| GPU implementation | Production-representative backend, solver, compiler, precision, and GPU | Defer until local screening supports it | GPU performance conclusion |
+| Runtime distributions | Sampled coefficients and `nsubmix` from EAMxx | Synthetic typical/strong profiles | Production representativeness |
+
 ## Proposed Diagnostics for Substepping Experiments
 
 This section defines a proposed diagnostics contract for the planned five-day
@@ -826,6 +1388,88 @@ changes in adaptive work from fixed costs and is cheap to derive from actual
 per-column Kokkos kernel; they are not 56 independent GPU kernel launches.
 Source-line or program-counter profiling is needed to apportion time within
 that kernel.
+
+### Provisional time-integrator performance model
+
+This subsection compares the present Forward Euler subcycling with two
+candidate implicit formulations. It is a source-based estimate, not measured
+performance. It assumes the level-zero boundary defect is corrected, mixing is
+enabled, and the estimated `max_tinv` ranges above represent the runtime
+distribution.
+
+The three formulations are defined here as follows:
+
+- **Forward Euler** is the current implementation. Its cost is proportional to
+  `nsubmix`; one explicit substep is the normalized unit of work.
+- **IMEX** evaluates activation and cloud-fraction source terms from the old
+  state and treats vertical mixing implicitly. This leaves scalar tridiagonal
+  systems with many right-hand sides.
+- **Backward Euler** treats both vertical mixing and the state-dependent
+  activation transfer implicitly. This couples each interstitial/cloud-borne
+  aerosol pair and requires a block-tridiagonal solve or an equivalent coupled
+  algorithm. Treating only mixing implicitly while retaining explicit sources
+  is IMEX under these definitions.
+
+All listed default horizontal resolutions use the same L128 grid. Approximate
+layer thicknesses are 24-52 m in the lowest kilometre and 54-127 m from 1-2 km.
+The stiffness therefore scales approximately as `K/dz^2`, or as `wtke/dz` on
+the cloud-base override path, but does not increase directly with horizontal
+resolution. Horizontal resolution changes the ACI interval and total number of
+columns.
+
+There are 51 vertically mixed fields: cloud-droplet number, 25 cloud-borne
+aerosol number/mass fields, and the corresponding 25 interstitial fields. Many
+fields share matrix coefficients. EKAT already provides GPU cyclic-reduction
+and CPU Thomas solvers for a scalar tridiagonal matrix with multiple right-hand
+sides (`externals/ekat/src/algorithm/ekat_tridiag.hpp`), and SHOC already uses
+that facility. An optimized IMEX implementation can therefore factor or reduce
+each shared matrix once per column and apply it to many aerosol fields.
+
+For provisional estimates, one optimized IMEX call is assigned a cost of
+**1.5-3 Forward Euler substeps**. A fully coupled Backward Euler call is assigned
+**3-5 Forward Euler substeps** because the paired activation terms make the
+system more complicated than EKAT's existing scalar multi-right-hand-side
+case. These ranges include matrix/RHS assembly and GPU synchronization, but not
+development cost or changes elsewhere in ACI. A field-by-field implementation
+that does not reuse matrices can be substantially slower.
+
+The tables report estimated vertical-mixing-loop runtime relative to current
+Forward Euler runtime; values below one are faster. They use a representative
+`nsubmix` from each previously estimated range. The Forward Euler work column
+gives total loop passes per physics step as range (representative value).
+
+#### Typical turbulence
+
+| Resolution | ACI interval (s) | `nsubmix` per call, range (representative) | Forward Euler passes per physics step | IMEX runtime / Forward Euler | Backward Euler runtime / Forward Euler | Expected result |
+|---|---:|---:|---:|---:|---:|---|
+| `ne4np4` | 150 | 1-6 (3) | 24-144 (72) | 0.50-1.00 | 1.00-1.67 | IMEX is near break-even to about 2x faster; full Backward Euler is unlikely to help. |
+| `ne30np4` | 150 | 1-6 (3) | 12-72 (36) | 0.50-1.00 | 1.00-1.67 | Same per-call result as `ne4`; absolute work is spread over many more columns. |
+| `ne120np4` | 75 | 1-3 (2) | 6-18 (12) | 0.75-1.50 | 1.50-2.50 | IMEX is borderline; full Backward Euler is likely slower. |
+| `ne256np4` | 33.33 | 1-2 (1) | 6-12 (6) | 1.50-3.00 | 3.00-5.00 | The current one-step explicit path is likely faster. |
+| `ne512np4` | 50 | 1-2 (1) | 2-4 (2) | 1.50-3.00 | 3.00-5.00 | The current one-step explicit path is likely faster. |
+| `ne1024np4` | 50 | 1-2 (1) | 1-2 (1) | 1.50-3.00 | 3.00-5.00 | The current one-step explicit path is likely faster. |
+
+#### Strong turbulence or cloud-base control
+
+| Resolution | ACI interval (s) | `nsubmix` per call, range (representative) | Forward Euler passes per physics step | IMEX runtime / Forward Euler | Backward Euler runtime / Forward Euler | Expected result |
+|---|---:|---:|---:|---:|---:|---|
+| `ne4np4` | 150 | 9-21 (15) | 216-504 (360) | 0.10-0.20 | 0.20-0.33 | IMEX is about 5-10x faster; full Backward Euler is about 3-5x faster. |
+| `ne30np4` | 150 | 9-21 (15) | 108-252 (180) | 0.10-0.20 | 0.20-0.33 | Same per-call speedup as `ne4`, with much larger domain-wide savings. |
+| `ne120np4` | 75 | 5-11 (8) | 30-66 (48) | 0.19-0.38 | 0.38-0.63 | IMEX is about 2.7-5.3x faster; full Backward Euler is about 1.6-2.7x faster. |
+| `ne256np4` | 33.33 | 2-5 (4) | 12-30 (24) | 0.38-0.75 | 0.75-1.25 | IMEX likely helps; full Backward Euler is borderline. |
+| `ne512np4` | 50 | 3-7 (5) | 6-14 (10) | 0.30-0.60 | 0.60-1.00 | IMEX is about 1.7-3.3x faster; full Backward Euler is break-even to about 1.7x faster. |
+| `ne1024np4` | 50 | 3-7 (5) | 3-7 (5) | 0.30-0.60 | 0.60-1.00 | Same per-call result as `ne512`; the total saving scales with the much larger column count. |
+
+These are loop-level estimates, not whole-model speedups. If the measured
+vertical-mixing loop fraction of baseline model runtime is `f` and a candidate
+has table ratio `r`, the maximum whole-model speedup implied by this model is
+`1 / ((1-f) + f*r)`. Implicit integration also replaces a variable-length
+column loop with fixed solve work, which may reduce GPU tail imbalance in
+heterogeneous strong-turbulence cases. Conversely, it imposes unnecessary
+fixed work on the many columns for which `nsubmix` is one. A hybrid policy that
+retains Forward Euler for `nsubmix <= 2` and batches larger-`nsubmix` columns for
+IMEX is therefore a plausible performance target, but it requires profiling
+and a separate numerical design review.
 
 ### Diagnostics currently present in the code
 
@@ -1138,6 +1782,15 @@ diagnostic overhead, but it is not part of the current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-07-30 | Codex | Synchronized the remediation as built: added exact zero-cloud resuspension/reset, deterministic finite-value failures, scaled and independently assembled residuals, per-field Forward Euler clipping diagnostics, all-field analytic convergence, coupled FE/IMEX convergence, and debug/sanitizer plus optimized evidence. The automated suites pass; independent gate re-review remains required. |
+| 2026-07-30 | User / Codex | Recorded explicit approval of the validation-gate remediation amendment, authorizing standalone harness and test remediation while keeping Backward Euler blocked until both remediated gates pass. |
+| 2026-07-29 | Codex | Added the pending remediation amendment after independent review failed both completed gates: made zero-cloud resuspension/reset part of the canonical state transition, required fail-loud handling of nonfinite derived quantities and diagnostics, expanded all-field activation and coupled convergence coverage, restored per-field Forward Euler clipping requirements, required an independently assembled residual check, and required coherent committed gate provenance. |
+| 2026-07-28 | Codex | Recorded successful standalone Forward Euler and IMEX gates, including per-field convergence, residual, ledger, positivity, randomized-regime, sanitizer, optimized-build, and exact-current regression evidence; Backward Euler remains unstarted. |
+| 2026-07-23 | User / Codex | Recorded explicit approval of the standalone numerical-method design, clearing Phase 0 for staged test and validation work but not production implementation. |
+| 2026-07-21 | User / Codex | Linked the document to Phase 0 of the isolated-integrator plan; clarified operator versus integrator, high-level acceptance, validity regimes, excluded defects, and non-authorization; restored production clipping only for Forward Euler and fail-loud positivity handling for test-only IMEX and Backward Euler. |
+| 2026-07-21 | User / Codex | Narrowed the proposed study to Mac-local standalone screening, replaced required RK4 with analytic and self-convergence evidence, required clipping with explicit conservation-error accounting, and deferred GPU implementation, bottom-source resolution, and downstream-fixer tracing. |
+| 2026-07-21 | User / Codex | Drafted the pending-review isolated Forward Euler, IMEX, and Backward Euler numerical design, staged validation gates, convergence criteria, and complete GPU timing contract; no test or production code was changed. |
+| 2026-07-21 | User / Codex | Added a provisional GPU-aware Forward Euler, IMEX, and fully implicit Backward Euler performance model across default resolutions and turbulence regimes; no production code was changed. |
 | 2026-07-21 | User / Codex | Documented the adaptive explicit vertical-mixing subloop in Fortran EAMv3 and its main differences from the EAMxx Kokkos implementation. |
 | 2026-07-21 | User / Codex | Verified that E3SM v3.0.0 Fortran applies both signs of each activation transfer and does not contain the EAMxx disabled-mixing switch defect. |
 | 2026-07-21 | User / Codex | Clarified that “cloud-fraction transfer” means same-level interstitial/cloud-borne repartitioning during cloud growth, decay, or disappearance, not vertical transport. |

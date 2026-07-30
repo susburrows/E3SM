@@ -1,0 +1,16 @@
+Forward Euler exact-current MAM4xx comparison
+Date: 2026-07-30
+MAM4xx revision: 1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db
+Configuration: NUM_VERTICAL_LEVELS=128, top_lev=1, Kokkos Serial
+
+Sanitizer and optimized builds produced the same case results:
+CASE name=one_full_inactive status=PASS nsubmix=1 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_full_inactive status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_full_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=five_full_inactive status=PASS nsubmix=5 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_fractional_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_fractional_limiter status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=isolated_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=contiguous_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=all_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+RESULT failed_cases=0
