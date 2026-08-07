@@ -44,7 +44,10 @@ below; it does not authorize production implementation.
 > overflow could produce nonfinite diagnostics without failure, and parts of
 > the already-approved convergence and per-field clipping test contract were
 > not implemented. The user approved the remediation contract on 2026-07-30.
-> Backward Euler remains blocked until both remediated gates pass.
+>
+> The corrected Forward Euler and IMEX gates passed independent extra-high
+> review on 2026-08-06 at candidate commit `2c4427e`. The standalone Backward
+> Euler gate may now begin; production implementation remains unauthorized.
 
 ### Phase 0 design gate
 
@@ -1270,10 +1273,12 @@ including exact-current zero-cloud comparisons. A second independent review on
 because the committed activation oracles were insensitive to mode
 permutations, Forward Euler clipping and finite-stage regression coverage was
 incomplete, and IMEX lacked a committed limiter-active oracle and focused
-finite-checker tests. The corrected candidate now includes those cases, passes
-all three registered executables in sanitizer/debug and optimized builds, and
-awaits a fresh independent review before either gate can be re-approved.
-Backward Euler has not begun. Executed evidence is recorded in
+finite-checker tests. The corrected candidate includes those cases and passed
+all three registered executables in sanitizer/debug and optimized builds. A
+fresh independent extra-high review reran the suites, exercised mode and matrix
+mutations plus independent hand calculations, and assigned strict `PASS`
+decisions to both gates. Backward Euler has not begun. Executed evidence is
+recorded in
 [`docs/analysis/evidence/ndrop_integrator/README.md`](../analysis/evidence/ndrop_integrator/README.md).
 
 ### Accuracy and convergence validation
@@ -1909,6 +1914,7 @@ diagnostic overhead, but it is not part of the current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-06 | Independent reviewer / Codex | Recorded strict independent `PASS` decisions for the corrected Forward Euler and IMEX gates at candidate `2c4427e` after fresh sanitizer/debug and optimized reruns, oracle-sensitivity mutations, and independent clipping and fractional-overlap hand checks. The Backward Euler gate may proceed. |
 | 2026-08-06 | Codex | Remediated the second independent FE/IMEX gate review with mode-sensitive independent activation oracles, complete exact clipping diagnostics, an IMEX limiter-active direct oracle, focused finite-stage failure probes, a reproducible CMake/CTest driver, and fresh sanitizer/debug plus optimized evidence. Both gates remain pending independent review. |
 | 2026-08-03 | Codex | Clarified that the frozen isolated operator is linear; documented the sequential scalar-tridiagonal IMEX structure, the block-tridiagonal Backward Euler structure, the EKAT versus integration-library boundary, current FE/IMEX/BE/hybrid trade-offs, and deferred higher-order implicit candidates. No production implementation was authorized. |
 | 2026-07-30 | Codex | Synchronized the remediation as built: added exact zero-cloud resuspension/reset, deterministic finite-value failures, scaled and independently assembled residuals, per-field Forward Euler clipping diagnostics, all-field analytic convergence, coupled FE/IMEX convergence, and debug/sanitizer plus optimized evidence. The automated suites pass; independent gate re-review remains required. |

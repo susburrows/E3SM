@@ -100,9 +100,11 @@ levels are nonnegative, and the limited activation removal cannot exceed its
 matching positive interstitial contribution from below. The forced unstable
 step remains only to test clipping diagnostics.
 
-The Forward Euler and IMEX gates remain pending independent approval. Passing
-the local suites records the corrected candidate evidence; it does not itself
-change either gate to `PASS`.
+An independent extra-high review of candidate commit `2c4427e` rebuilt and
+reran both configurations, inspected the equations and durable tests, and used
+reviewer-only mode, matrix, clipping, and hand-solve checks. It assigned strict
+`PASS` decisions to both the Forward Euler and IMEX gates. The complete review
+is retained in `independent_review_20260806.md`.
 
 ### Executed results: 2026-08-06
 
@@ -156,6 +158,7 @@ Retained output records:
 | `fe_validation_20260806.txt` | `b51dbadd2575affd80e8d81d069bf6d690b030d2989b9bd27b05fa30e2b26490` |
 | `imex_validation_20260806.txt` | `868a6ce12850251c0274a7cb85abf00be726a542f44ecdb58232d778f152d695` |
 | `mam4xx_comparison_20260806.txt` | `95aa39bbeacfde590ec6e3ec2a3ad1520cd04d4b5eeb300c8c52529d2d1ac83b` |
+| `independent_review_20260806.md` | `dda1d5f9e0661898327469c1ab94a1e8cef60d6c6b15dbc4f36e8efb3e6d0b26` |
 
 This is local CPU correctness evidence for the test-only operator. It is not
 GPU performance evidence, whole-model validation, or authorization for a

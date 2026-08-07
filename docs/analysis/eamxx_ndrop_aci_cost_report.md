@@ -691,9 +691,9 @@ nonsmooth operation.
 
 | Strategy | Main performance opportunity | Main accuracy or implementation risk | Current evidence |
 |---|---|---|---|
-| Current subcycled Forward Euler | Cheapest when `nsubmix` is one; no solve setup | Strong mixing requires many sequential substeps and vertical passes; clipping can change the aerosol ledger | Exact-current standalone comparisons pass at safe boundaries; automated remediation suite passes pending independent re-review |
-| IMEX-Euler | Replaces stability-driven substeps with fixed scalar tridiagonal solves over many right-hand sides | Explicit activation is lagged for the ACI interval; raw positivity can fail; overhead can lose when `nsubmix` is one or two | CPU correctness and first-order convergence suite passes pending independent re-review; no production or GPU timing |
-| Fully implicit Backward Euler | Treats activation and mixing at the new state and removes the explicit mixing restriction | Needs a custom 2-by-2 block-tridiagonal solver; more work and storage; first-order damping; positivity is not guaranteed | Designed but not implemented; blocked behind FE and IMEX gate re-review |
+| Current subcycled Forward Euler | Cheapest when `nsubmix` is one; no solve setup | Strong mixing requires many sequential substeps and vertical passes; clipping can change the aerosol ledger | Standalone gate passed independent review at safe boundaries; no new production or GPU timing |
+| IMEX-Euler | Replaces stability-driven substeps with fixed scalar tridiagonal solves over many right-hand sides | Explicit activation is lagged for the ACI interval; raw positivity can fail; overhead can lose when `nsubmix` is one or two | Standalone CPU correctness and first-order gate passed independent review; no production or GPU timing |
+| Fully implicit Backward Euler | Treats activation and mixing at the new state and removes the explicit mixing restriction | Needs a custom 2-by-2 block-tridiagonal solver; more work and storage; first-order damping; positivity is not guaranteed | Designed but not implemented; its standalone gate may now begin |
 | Hybrid FE/IMEX | Keeps low-cost FE columns and applies IMEX only to the expensive high-`nsubmix` tail | Requires device-side classification/batching, a tested threshold, and two maintained numerical paths | Provisional GPU-oriented concept only |
 
 The provisional GPU preference is hybrid FE/IMEX if expensive columns can be
@@ -796,6 +796,7 @@ adaptive-work measurements.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-06 | Codex | Recorded independent `PASS` decisions for the corrected standalone Forward Euler and IMEX gates and cleared the separately gated Backward Euler work to begin; no production or GPU claim was added. |
 | 2026-08-03 | Codex | Added the current FE, IMEX, Backward Euler, and hybrid comparison; clarified the frozen problem's linear structure, EKAT and external-library roles, matched-error requirement, GPU implications, and deferred higher-order candidates. |
 | 2026-07-21 | User / Codex | Corrected the disabled-mixing description to distinguish vertical transport from activation, cover aerosol number as well as mass, and explain the unwritten interstitial destination for every tested substep count. |
 | 2026-07-21 | User / Codex | Clarified that Fortran EAMv3 contains the same adaptive explicit mixing subloop and summarized its execution and boundary differences from EAMxx. |
