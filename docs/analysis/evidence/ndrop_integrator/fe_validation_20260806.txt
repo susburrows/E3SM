@@ -1,0 +1,9 @@
+configuration=debug-asan-ubsan-kokkos-bounds
+CONVERGENCE case=fe_diffusion order_range=1.00004:1.00004 min_r2=1
+CONVERGENCE case=fe_activation_all_fields order_range=1.00514:1.00704 min_r2=0.999998
+RESULT passed=21284 failed=0
+
+configuration=release-o3-ndebug
+CONVERGENCE case=fe_diffusion order_range=1.00004:1.00004 min_r2=1
+CONVERGENCE case=fe_activation_all_fields order_range=1.00514:1.00704 min_r2=0.999998
+RESULT passed=21284 failed=0

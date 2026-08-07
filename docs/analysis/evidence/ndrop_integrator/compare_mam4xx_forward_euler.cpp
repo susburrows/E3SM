@@ -112,7 +112,8 @@ State initial_state() {
 
 OperatorData canonical_operator(const Real exchange,
                                 const Real activation_rate,
-                                const CloudProfile profile) {
+                                const CloudProfile profile,
+                                const bool distinct_modes) {
   OperatorData op(active_levels);
   for (int h = 0; h < active_levels; ++h) {
     op.pressure_weight[h] = 1;
@@ -122,12 +123,15 @@ OperatorData canonical_operator(const Real exchange,
     op.interface_exchange[interface] = exchange;
   }
   for (int mode = 0; mode < nmodes; ++mode) {
+    const Real number_rate =
+        activation_rate * (distinct_modes ? Real(mode + 1) : Real(1));
+    const Real mass_rate =
+        activation_rate * (distinct_modes ? Real(mode + 5) : Real(0.5));
     std::fill(op.number_activation_rate[mode].begin(),
-              op.number_activation_rate[mode].end(), activation_rate);
+              op.number_activation_rate[mode].end(), number_rate);
     std::fill(op.mass_activation_rate[mode].begin(),
-              op.mass_activation_rate[mode].end(),
-              Real(0.5) * activation_rate);
-    if (activation_rate <= exchange) {
+              op.mass_activation_rate[mode].end(), mass_rate);
+    if (number_rate <= exchange && mass_rate <= exchange) {
       op.number_activation_rate[mode].back() = 0;
       op.mass_activation_rate[mode].back() = 0;
     }
@@ -149,10 +153,11 @@ void compare_value(const Real exact, const Real canonical,
 }
 
 Comparison run_comparison(const Real exchange, const Real activation_rate,
-                          const CloudProfile profile) {
+                          const CloudProfile profile,
+                          const bool distinct_modes = false) {
   const State initial = initial_state();
   const OperatorData host_op =
-      canonical_operator(exchange, activation_rate, profile);
+      canonical_operator(exchange, activation_rate, profile, distinct_modes);
   const auto canonical =
       ndrop_test::advance_forward_euler(initial, host_op, 1);
   if (!canonical.ok) {
@@ -218,11 +223,15 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
   for (int h = 0; h < active_levels; ++h) {
     const int k = h + top_lev;
     for (int mode = 0; mode < nmodes; ++mode) {
-      const bool limiter_inactive_bottom =
-          h + 1 == active_levels && activation_rate <= exchange;
-      nact(k, mode) = limiter_inactive_bottom ? 0 : activation_rate;
-      mact(k, mode) =
-          limiter_inactive_bottom ? 0 : Real(0.5) * activation_rate;
+      const Real number_rate =
+          activation_rate * (distinct_modes ? Real(mode + 1) : Real(1));
+      const Real mass_rate =
+          activation_rate * (distinct_modes ? Real(mode + 5) : Real(0.5));
+      const bool limiter_inactive_bottom = h + 1 == active_levels &&
+                                           number_rate <= exchange &&
+                                           mass_rate <= exchange;
+      nact(k, mode) = limiter_inactive_bottom ? 0 : number_rate;
+      mact(k, mode) = limiter_inactive_bottom ? 0 : mass_rate;
     }
   }
 
@@ -307,14 +316,17 @@ int main(int argc, char **argv) {
       Real activation_rate;
       CloudProfile profile;
       int expected_nsubmix;
+      bool distinct_modes = false;
     };
-    constexpr std::array<TestCase, 9> cases = {
+    constexpr std::array<TestCase, 10> cases = {
         TestCase{"one_full_inactive", 0.01, 0.001, CloudProfile::full, 1},
         TestCase{"two_full_inactive", 0.5, 0.001, CloudProfile::full, 2},
         TestCase{"three_full_inactive", 1, 0.001, CloudProfile::full, 3},
         TestCase{"five_full_inactive", 2, 0.001, CloudProfile::full, 5},
         TestCase{"three_fractional_inactive", 1, 0.001,
                  CloudProfile::fractional, 3},
+        TestCase{"two_fractional_distinct_modes", 0.5, 0.001,
+                 CloudProfile::fractional, 2, true},
         TestCase{"two_fractional_limiter", 0.5, 10,
                  CloudProfile::fractional, 2},
         TestCase{"isolated_zero", 0.5, 0.001,
@@ -326,7 +338,7 @@ int main(int argc, char **argv) {
     for (const auto &test : cases) {
       const Comparison result =
           run_comparison(test.exchange, test.activation_rate,
-                         test.profile);
+                         test.profile, test.distinct_modes);
       const bool pass =
           result.expected_nsubmix == test.expected_nsubmix &&
           result.mismatches == 0;

@@ -1,0 +1,25 @@
+configuration=debug-asan-ubsan-kokkos-bounds
+CASE name=one_full_inactive status=PASS nsubmix=1 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_full_inactive status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_full_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=five_full_inactive status=PASS nsubmix=5 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_fractional_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_fractional_distinct_modes status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_fractional_limiter status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=isolated_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=contiguous_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=all_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+RESULT failed_cases=0
+
+configuration=release-o3-ndebug
+CASE name=one_full_inactive status=PASS nsubmix=1 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_full_inactive status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_full_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=five_full_inactive status=PASS nsubmix=5 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=three_fractional_inactive status=PASS nsubmix=3 exact_final_buffer=1 canonical_final_buffer=1 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_fractional_distinct_modes status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=two_fractional_limiter status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=isolated_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=contiguous_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+CASE name=all_zero status=PASS nsubmix=2 exact_final_buffer=0 canonical_final_buffer=0 max_abs_difference=0 max_rel_difference=0 mismatches=0
+RESULT failed_cases=0

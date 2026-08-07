@@ -241,6 +241,14 @@ bool update_physical_residual(const std::vector<Real> &old,
   return std::isfinite(overall_max);
 }
 
+bool normalized_ledger_error(const Real initial, const Real final,
+                             Real &normalized) {
+  const Real scale = std::abs(initial);
+  normalized = scale > 0 ? std::abs(final / scale - initial / scale)
+                         : std::abs(final);
+  return std::isfinite(normalized);
+}
+
 void update_positivity(const std::vector<Real> &initial,
                        const std::vector<Real> &solution,
                        AdvanceDiagnostics &diagnostics) {
@@ -438,13 +446,10 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     return result;
   }
   for (int j = 0; j < num_constituents; ++j) {
-    const Real scale = std::abs(result.diagnostics.initial_ledger[j]);
-    const Real normalized =
-        scale > 0
-            ? std::abs(result.diagnostics.final_ledger[j] / scale -
-                       result.diagnostics.initial_ledger[j] / scale)
-            : std::abs(result.diagnostics.final_ledger[j]);
-    if (!std::isfinite(normalized)) {
+    Real normalized = 0;
+    if (!normalized_ledger_error(result.diagnostics.initial_ledger[j],
+                                 result.diagnostics.final_ledger[j],
+                                 normalized)) {
       result.message = "IMEX aerosol ledger normalization is nonfinite";
       return result;
     }
@@ -469,6 +474,44 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     result.message = "ok";
   }
   return result;
+}
+
+bool imex_nonfinite_probe_is_rejected(const ImexFiniteProbe probe) {
+  const Real nan = std::numeric_limits<Real>::quiet_NaN();
+  switch (probe) {
+  case ImexFiniteProbe::solution: {
+    View2D solution("imex_nonfinite_solution_probe", 1, 1);
+    Kokkos::deep_copy(solution, nan);
+    return !finite_view(solution);
+  }
+  case ImexFiniteProbe::matrix_residual: {
+    const Matrix matrix{{0}, {1}, {0}};
+    View2D solution("imex_nonfinite_matrix_solution_probe", 1, 1);
+    View2D rhs("imex_nonfinite_matrix_rhs_probe", 1, 1);
+    Kokkos::deep_copy(solution, nan);
+    Kokkos::deep_copy(rhs, Real(1));
+    Real normalized = 0;
+    return !normalized_matrix_residual(matrix, solution, rhs, normalized);
+  }
+  case ImexFiniteProbe::physical_residual: {
+    PreparedOperator op;
+    op.pressure_weight = {1};
+    op.rate_below = {0};
+    op.rate_above = {0};
+    op.overlap_below = {1};
+    op.overlap_above = {1};
+    Real normalized = 0;
+    return !update_physical_residual({1}, {1}, {nan}, op, 1, false,
+                                     nullptr, normalized);
+  }
+  case ImexFiniteProbe::ledger_normalization: {
+    Real normalized = 0;
+    return !normalized_ledger_error(std::numeric_limits<Real>::denorm_min(),
+                                    std::numeric_limits<Real>::max(),
+                                    normalized);
+  }
+  }
+  return false;
 }
 
 } // namespace ndrop_test

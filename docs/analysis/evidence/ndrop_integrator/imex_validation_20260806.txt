@@ -1,0 +1,11 @@
+configuration=debug-asan-ubsan-kokkos-bounds
+CONVERGENCE case=diffusion l1_order_range=0.999957:0.999957 linf_order_range=0.999957:0.999958 min_r2=1
+CONVERGENCE case=activation l1_order_range=0.991946:0.992783 linf_order_range=0.993205:0.993723 min_r2=0.999998
+CONVERGENCE case=coupled_all_fields order_range=0.99701:1.00319 max_finest_cross_error=9.0418e-05
+RESULT passed=21622 failed=0
+
+configuration=release-o3-ndebug
+CONVERGENCE case=diffusion l1_order_range=0.999957:0.999957 linf_order_range=0.999957:0.999958 min_r2=1
+CONVERGENCE case=activation l1_order_range=0.991946:0.992783 linf_order_range=0.993205:0.993723 min_r2=0.999998
+CONVERGENCE case=coupled_all_fields order_range=0.99701:1.00319 max_finest_cross_error=9.0418e-05
+RESULT passed=21622 failed=0

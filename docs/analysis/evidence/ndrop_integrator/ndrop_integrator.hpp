@@ -97,6 +97,13 @@ struct ForwardEulerOptions {
   bool apply_clipping = true;
 };
 
+enum class ImexFiniteProbe {
+  solution,
+  matrix_residual,
+  physical_residual,
+  ledger_normalization
+};
+
 int constituent_mode(int constituent);
 bool constituent_is_number(int constituent);
 
@@ -135,6 +142,10 @@ AdvanceResult advance_forward_euler(const State &initial,
 // Implemented in ndrop_imex.cpp and linked only by the EKAT-backed test target.
 AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                            Real dt);
+
+// Test-only access to finite-value checkers whose failure branches cannot be
+// reached from a valid M-matrix and finite right-hand side.
+bool imex_nonfinite_probe_is_rejected(ImexFiniteProbe probe);
 
 } // namespace ndrop_test
 

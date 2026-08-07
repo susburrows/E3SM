@@ -1265,9 +1265,15 @@ suite, the IMEX activation oracle did not exercise all aerosol fields, neither
 gate implemented the required coupled all-field convergence case, and Forward
 Euler clipping diagnostics were not fully per-field. The remediation suite
 passed in debug/sanitizer and optimized local configurations on 2026-07-30,
-including exact-current zero-cloud comparisons. The Forward Euler and IMEX
-gates await independent re-review before they can be re-approved. Backward
-Euler has not begun. Executed evidence is recorded in
+including exact-current zero-cloud comparisons. A second independent review on
+2026-08-06 found no numerical-method defect but retained `FAIL` for both gates
+because the committed activation oracles were insensitive to mode
+permutations, Forward Euler clipping and finite-stage regression coverage was
+incomplete, and IMEX lacked a committed limiter-active oracle and focused
+finite-checker tests. The corrected candidate now includes those cases, passes
+all three registered executables in sanitizer/debug and optimized builds, and
+awaits a fresh independent review before either gate can be re-approved.
+Backward Euler has not begun. Executed evidence is recorded in
 [`docs/analysis/evidence/ndrop_integrator/README.md`](../analysis/evidence/ndrop_integrator/README.md).
 
 ### Accuracy and convergence validation
@@ -1903,6 +1909,7 @@ diagnostic overhead, but it is not part of the current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-06 | Codex | Remediated the second independent FE/IMEX gate review with mode-sensitive independent activation oracles, complete exact clipping diagnostics, an IMEX limiter-active direct oracle, focused finite-stage failure probes, a reproducible CMake/CTest driver, and fresh sanitizer/debug plus optimized evidence. Both gates remain pending independent review. |
 | 2026-08-03 | Codex | Clarified that the frozen isolated operator is linear; documented the sequential scalar-tridiagonal IMEX structure, the block-tridiagonal Backward Euler structure, the EKAT versus integration-library boundary, current FE/IMEX/BE/hybrid trade-offs, and deferred higher-order implicit candidates. No production implementation was authorized. |
 | 2026-07-30 | Codex | Synchronized the remediation as built: added exact zero-cloud resuspension/reset, deterministic finite-value failures, scaled and independently assembled residuals, per-field Forward Euler clipping diagnostics, all-field analytic convergence, coupled FE/IMEX convergence, and debug/sanitizer plus optimized evidence. The automated suites pass; independent gate re-review remains required. |
 | 2026-07-30 | User / Codex | Recorded explicit approval of the validation-gate remediation amendment, authorizing standalone harness and test remediation while keeping Backward Euler blocked until both remediated gates pass. |

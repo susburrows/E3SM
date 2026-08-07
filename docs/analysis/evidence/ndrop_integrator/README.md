@@ -9,20 +9,26 @@ current Forward Euler subcycling, activation-rate limiting, alternating work
 buffers, and componentwise positivity clipping. The test suite covers all 25
 aerosol constituents and droplet number.
 
-Build and run outside the OneDrive source tree:
+Build and run outside the OneDrive source tree. `Kokkos_DIR` must identify a
+Serial Kokkos build matching the checked-out EKAT revision. The exact-current
+adapter also requires the Haero source; initialize that submodule or pass its
+location explicitly.
 
 ```bash
-SRC=/path/to/E3SM/docs/analysis/evidence/ndrop_integrator
-BUILD=/private/tmp/ndrop-int
-mkdir -p "$BUILD"
-
-clang++ -std=c++17 -O0 -g \
-  -fsanitize=address,undefined -fno-omit-frame-pointer \
-  "$SRC/ndrop_integrator.cpp" "$SRC/test_forward_euler.cpp" \
-  -o "$BUILD/test_forward_euler"
-
-"$BUILD/test_forward_euler"
+cmake -S /path/to/E3SM/docs/analysis/evidence/ndrop_integrator \
+  -B /private/tmp/ndrop-int-debug \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DKokkos_DIR=/path/to/kokkos-debug-build \
+  -DNDROP_ENABLE_SANITIZERS=ON \
+  -DHAERO_SOURCE=/path/to/haero
+cmake --build /private/tmp/ndrop-int-debug --parallel 4
+ctest --test-dir /private/tmp/ndrop-int-debug --output-on-failure
 ```
+
+Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
+`-DNDROP_ENABLE_SANITIZERS=OFF` for the optimized gate. The checked-in
+`CMakeLists.txt` applies warnings-as-errors to all harness sources and registers
+the Forward Euler, IMEX, and exact-current executables with CTest.
 
 Successful harness tests do not validate the known production `top_lev=0` or
 `enable_aero_vertical_mix=false` defect paths. Those paths are explicitly
@@ -33,9 +39,10 @@ adapter. It compares the canonical harness with the unmodified
 `mam4::ndrop::update_from_explmix` at `NUM_VERTICAL_LEVELS=128` and a safe
 `top_lev=1`. It covers production substep counts 1, 2, 3, and 5; full and
 fractional overlap; limiter-active and limiter-inactive activation; and
-isolated, contiguous, and all-zero cloud profiles. The destination work array
-is filled with unrelated values before every exact call to detect incomplete
-writes.
+isolated, contiguous, and all-zero cloud profiles. One case assigns distinct
+number and mass activation rates to every mode so a mode-mapping permutation
+cannot be hidden by equal coefficients. The destination work array is filled
+with unrelated values before every exact call to detect incomplete writes.
 
 `ndrop_imex.cpp` implements the approved IMEX split with EKAT's serial Thomas
 solver. `test_imex.cpp` checks identity and uniform-state behavior, fractional-
@@ -62,13 +69,9 @@ Euler's coupled block-tridiagonal solve, a hybrid FE/IMEX policy, or any
 higher-order implicit method. Those are separate, unvalidated stages and are
 not implied by the CPU correctness results below.
 
-## Remediation validation
+## Gate validation status
 
-An independent review on 2026-07-29 rejected the original Forward Euler and
-IMEX gates. The shared harness omitted the production zero-cloud
-resuspension/reset, could accept nonfinite diagnostics after finite-input
-overflow, and did not contain all of the approved all-field convergence and
-clipping checks. The 2026-07-30 remediation adds:
+The current gate artifacts include:
 
 - exact production zero-cloud handling after each complete integration call;
 - checked derived coefficients, activation sources, state updates, matrix and
@@ -79,9 +82,17 @@ clipping checks. The 2026-07-30 remediation adds:
   counts, weighted clipping changes, and ledger effects;
 - all-51-field analytic diffusion and activation convergence;
 - a nonuniform, fractional-overlap, all-field coupled FE/IMEX
-  self-convergence and common-limit test; and
+  self-convergence and common-limit test;
 - randomized weak-to-strong production-adaptive FE tests confirming that the
-  approved substep and activation-rate limits keep raw updates nonnegative.
+  approved substep and activation-rate limits keep raw updates nonnegative;
+- independent, deliberately distinct modal activation coefficients in both
+  analytic suites and the exact-current adapter;
+- exact droplet and all-constituent interstitial/cloud-borne clipping counts,
+  raw minima, weighted deficits, and clipping-ledger changes;
+- an IMEX limiter-active direct two-level solve for every field; and
+- explicit failure tests for nonfinite input, FE raw updates and clipping
+  diagnostics, and IMEX solution, matrix-residual, physical-residual, and
+  ledger-normalization checkers.
 
 The last property follows from the production substep bound: the retained
 coefficient of the old value is positive, mixing contributions from neighboring
@@ -89,58 +100,36 @@ levels are nonnegative, and the limited activation removal cannot exceed its
 matching positive interstitial contribution from below. The forced unstable
 step remains only to test clipping diagnostics.
 
-### Executed results
+The Forward Euler and IMEX gates remain pending independent approval. Passing
+the local suites records the corrected candidate evidence; it does not itself
+change either gate to `PASS`.
 
-The final sanitizer and optimized Forward Euler runs each passed 20,899 checks:
+### Executed results: 2026-08-06
+
+The sanitizer/debug and optimized Forward Euler runs each passed 21,284 checks:
 
 ```text
 CONVERGENCE case=fe_diffusion order_range=1.00004:1.00004 min_r2=1
-CONVERGENCE case=fe_activation_all_fields order_range=1.00555:1.00702 min_r2=0.999998
-RESULT passed=20899 failed=0
+CONVERGENCE case=fe_activation_all_fields order_range=1.00514:1.00704 min_r2=0.999998
+RESULT passed=21284 failed=0
 ```
 
-The final sanitizer and optimized IMEX runs each passed 21,537 checks:
+The sanitizer/debug and optimized IMEX runs each passed 21,622 checks:
 
 ```text
 CONVERGENCE case=diffusion l1_order_range=0.999957:0.999957 linf_order_range=0.999957:0.999958 min_r2=1
-CONVERGENCE case=activation l1_order_range=0.992285:0.992673 linf_order_range=0.993273:0.993517 min_r2=0.999998
+CONVERGENCE case=activation l1_order_range=0.991946:0.992783 linf_order_range=0.993205:0.993723 min_r2=0.999998
 CONVERGENCE case=coupled_all_fields order_range=0.99701:1.00319 max_finest_cross_error=9.0418e-05
-RESULT passed=21537 failed=0
+RESULT passed=21622 failed=0
 ```
 
-The exact-current adapter passed nine sanitizer and optimized cases with zero
-mismatches and zero maximum absolute or relative difference. This includes
-isolated, contiguous, and all-zero cloud profiles.
+The exact-current adapter passed ten sanitizer/debug and optimized cases with
+zero mismatches and zero maximum absolute or relative difference. This includes
+the distinct-mode case and isolated, contiguous, and all-zero cloud profiles.
 
-The commands were run from the E3SM source root with all generated executables
-under `/private/tmp/ndrop-remediate`. The debug Kokkos/EKAT installation was
-`/private/tmp/ni2-install`; the release installation was
-`/private/tmp/ni2-rel-install`. Representative build forms were:
-
-```bash
-clang++ -std=c++17 -O0 -g -fsanitize=address,undefined \
-  -fno-omit-frame-pointer \
-  docs/analysis/evidence/ndrop_integrator/ndrop_integrator.cpp \
-  docs/analysis/evidence/ndrop_integrator/test_forward_euler.cpp \
-  -o /private/tmp/ndrop-remediate/test_forward_euler_san
-
-clang++ -std=c++17 -O0 -g -fsanitize=address,undefined \
-  -fno-omit-frame-pointer \
-  -isystem /private/tmp/ni2-install/include/ekat \
-  -isystem /private/tmp/ni2-install/include/kokkos \
-  docs/analysis/evidence/ndrop_integrator/ndrop_integrator.cpp \
-  docs/analysis/evidence/ndrop_integrator/ndrop_imex.cpp \
-  docs/analysis/evidence/ndrop_integrator/test_imex.cpp \
-  /private/tmp/ni2-install/lib/libekat_kokkosutils.a \
-  /private/tmp/ni2-install/lib/libkokkoscontainers.a \
-  /private/tmp/ni2-install/lib/libkokkoscore.a -ldl -lpthread \
-  -o /private/tmp/ndrop-remediate/test_imex_san
-```
-
-The optimized forms replace the sanitizer/debug flags with `-O3 -DNDEBUG` and
-use `/private/tmp/ni2-rel-install`. The exact-current adapter additionally uses
-`-DNUM_VERTICAL_LEVELS=128`, the checked-out MAM4xx headers, and the generated
-MAM4xx/Haero configuration headers.
+Both CTest configurations passed all three registered executables. All build
+products were under `/private/tmp/ndrop-gate-remediate`; no dependency or
+production-physics source was modified.
 
 The debug executables used ASan/UBSan and Kokkos bounds checking. The optimized
 executables used `-O3 -DNDEBUG` and the release Kokkos/EKAT libraries. Both
@@ -151,34 +140,22 @@ headers were treated as system headers for this check.
 
 ### Provenance
 
-- E3SM inspected revision:
-  `e12e7d61dba924717e8f35fe8288247c1766ee30`
+- E3SM remediation base revision:
+  `3f8d0812602730b7bcca2b02e5a4ecae42fd62d8`
 - MAM4xx inspected revision:
   `1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`
 - EKAT inspected revision:
   `65cda3ff61abe22add622b56cee6234e29fc51c4`
-- Debug Kokkos library SHA-256:
-  `a040f738b29bbfb6471486fef4a7096df0e8697667f5be965b83adb51711055e`
-- Debug EKAT Kokkos-utils library SHA-256:
-  `a0338864d8afecd0cb6538a8e7dace8cb0d4f0a8de6cf15f9d5f6f9a4c181f24`
-- Release Kokkos library SHA-256:
-  `a5246e431826d861593256c42101828c724a1c8d7a0035965bd5eca814b9e402`
-- Release EKAT Kokkos-utils library SHA-256:
-  `d3a2f9b15dfe08542f5eb3bd92cef3b5ebf13509a69d8fa9b46880c84f3adbcc`
+- Kokkos inspected revision: `6a19eb9454da490dbf785443d8f021028baeb161`
+- Haero inspected revision: `8f9b61aed4252461d76eb7c206927e4a005930f5`
 
 Retained output records:
 
 | Record | SHA-256 |
 |---|---|
-| `fe_validation_20260730.txt` | `9e2259c612bae542b0d6c2341807b52a974f2267e83fd5a42ed7cc7ba28de8d6` |
-| `imex_validation_20260730.txt` | `9b164825cb3882905963003afa49f0ce66ab9305967f832a9569b2811c20be22` |
-| `mam4xx_comparison_20260730.txt` | `04c55fd1dbcbbe7a945152b0a94fd1907240500ad60fbaa0255ab19778b1a870` |
-
-The inspected EKAT revision's macOS floating-point-exception fallback accesses
-x86-only `fenv_t` members and does not compile on Apple Silicon. The generated
-scratch dependency copy used no-op FPE mask-control functions for the local
-build. These test executables do not enable or query FPE traps. No repository
-EKAT, MAM4xx, or production physics source was modified by this workaround.
+| `fe_validation_20260806.txt` | `b51dbadd2575affd80e8d81d069bf6d690b030d2989b9bd27b05fa30e2b26490` |
+| `imex_validation_20260806.txt` | `868a6ce12850251c0274a7cb85abf00be726a542f44ecdb58232d778f152d695` |
+| `mam4xx_comparison_20260806.txt` | `95aa39bbeacfde590ec6e3ec2a3ad1520cd04d4b5eeb300c8c52529d2d1ac83b` |
 
 This is local CPU correctness evidence for the test-only operator. It is not
 GPU performance evidence, whole-model validation, or authorization for a

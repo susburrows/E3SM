@@ -21,6 +21,17 @@ using ndrop_test::State;
 using ndrop_test::num_constituents;
 using ndrop_test::num_modes;
 
+// Independent oracle mapping; do not replace with constituent_mode or
+// constituent_is_number from the implementation under test.
+constexpr std::array<int, num_constituents> expected_mode = {
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3};
+constexpr std::array<bool, num_constituents> expected_number = {
+    true,  false, false, false, false, false, false, false, true,
+    false, false, false, false, true,  false, false, false, false,
+    false, false, false, true,  false, false, false};
+constexpr std::array<int, num_modes> expected_number_index = {0, 8, 13, 21};
+
 int passed = 0;
 int failed = 0;
 
@@ -38,6 +49,17 @@ bool near(const Real lhs, const Real rhs, const Real factor = 500) {
       factor * std::numeric_limits<Real>::epsilon() *
       std::max({std::abs(lhs), std::abs(rhs), Real(1)});
   return std::abs(lhs - rhs) <= tolerance;
+}
+
+std::array<Real, 2>
+solve_symmetric_diffusion(const std::array<Real, 2> &rhs, const Real rate,
+                          const Real dt) {
+  const Real diagonal = 1 + dt * rate;
+  const Real off_diagonal = -dt * rate;
+  const Real determinant =
+      diagonal * diagonal - off_diagonal * off_diagonal;
+  return {(diagonal * rhs[0] - off_diagonal * rhs[1]) / determinant,
+          (-off_diagonal * rhs[0] + diagonal * rhs[1]) / determinant};
 }
 
 State make_state(const std::size_t nlev, const bool uniform = false) {
@@ -439,23 +461,25 @@ PairSolution exact_activation_pair(
 
 void test_activation_convergence() {
   constexpr Real d = 0.5;
-  constexpr Real number_activation = 0.2;
-  constexpr Real mass_activation = 0.1;
+  constexpr std::array<Real, num_modes> number_activation = {0.11, 0.17,
+                                                              0.23, 0.29};
+  constexpr std::array<Real, num_modes> mass_activation = {0.07, 0.13, 0.19,
+                                                            0.25};
   constexpr Real total_time = 1;
   State initial = make_state(2);
   State exact = initial;
   OperatorData op(2);
   op.interface_exchange[1] = d;
   for (int mode = 0; mode < num_modes; ++mode) {
-    op.number_activation_rate[mode][0] = number_activation;
-    op.mass_activation_rate[mode][0] = mass_activation;
+    op.number_activation_rate[mode][0] = number_activation[mode];
+    op.mass_activation_rate[mode][0] = mass_activation[mode];
   }
 
   std::array<std::array<Real, 2>, num_modes> number_forcing{};
   for (int j = 0; j < num_constituents; ++j) {
-    const Real activation = ndrop_test::constituent_is_number(j)
-                                ? number_activation
-                                : mass_activation;
+    const int mode = expected_mode[j];
+    const Real activation = expected_number[j] ? number_activation[mode]
+                                                : mass_activation[mode];
     const auto solution = exact_activation_pair(
         {initial.interstitial[j][0], initial.interstitial[j][1]},
         {initial.cloudborne[j][0], initial.cloudborne[j][1]}, d, activation,
@@ -464,9 +488,9 @@ void test_activation_convergence() {
                              solution.interstitial[1]};
     exact.cloudborne[j] = {solution.cloudborne[0],
                            solution.cloudborne[1]};
-    if (ndrop_test::constituent_is_number(j)) {
-      number_forcing[ndrop_test::constituent_mode(j)] =
-          forced_cloud_pair({0, 0}, d, number_activation, total_time,
+    if (expected_number[j]) {
+      number_forcing[mode] =
+          forced_cloud_pair({0, 0}, d, number_activation[mode], total_time,
                             solution.coefficient_a, solution.coefficient_b,
                             solution.rate_a, solution.rate_b);
     }
@@ -523,6 +547,56 @@ void test_activation_convergence() {
             << min_l1_order << ':' << max_l1_order
             << " linf_order_range=" << min_linf_order << ':'
             << max_linf_order << " min_r2=" << min_r2 << '\n';
+}
+
+void test_activation_limiter_oracle() {
+  constexpr Real exchange = 0.25;
+  constexpr Real dt = 0.01;
+  State initial = make_state(2);
+  OperatorData op(2);
+  op.interface_exchange[1] = exchange;
+  for (int mode = 0; mode < num_modes; ++mode) {
+    op.number_activation_rate[mode][0] = 10 + mode;
+    op.mass_activation_rate[mode][0] = 20 + mode;
+  }
+
+  const auto result = ndrop_test::advance_imex(initial, op, dt);
+  check(result.ok, "limiter-active IMEX succeeds: " + result.message);
+  check(result.diagnostics.activation_limiter_count == 2 * num_modes,
+        "limiter-active IMEX reports all capped rates");
+
+  Real droplet_source = 0;
+  for (const int j : expected_number_index) {
+    droplet_source += exchange * initial.interstitial[j][1];
+  }
+  const auto expected_droplet = solve_symmetric_diffusion(
+      {initial.droplet_number[0] + dt * droplet_source,
+       initial.droplet_number[1]},
+      exchange, dt);
+  check(near(result.state.droplet_number[0], expected_droplet[0]) &&
+            near(result.state.droplet_number[1], expected_droplet[1]),
+        "limiter-active droplet solve uses capped modal sources");
+
+  for (int j = 0; j < num_constituents; ++j) {
+    const Real source = exchange * initial.interstitial[j][1];
+    const auto expected_cloud = solve_symmetric_diffusion(
+        {initial.cloudborne[j][0] + dt * source,
+         initial.cloudborne[j][1]},
+        exchange, dt);
+    const auto expected_interstitial = solve_symmetric_diffusion(
+        {initial.interstitial[j][0] - dt * source,
+         initial.interstitial[j][1]},
+        exchange, dt);
+    check(near(result.state.cloudborne[j][0], expected_cloud[0]) &&
+              near(result.state.cloudborne[j][1], expected_cloud[1]),
+          "limiter-active cloudborne field matches direct solve");
+    check(near(result.state.interstitial[j][0], expected_interstitial[0]) &&
+              near(result.state.interstitial[j][1], expected_interstitial[1]),
+          "limiter-active interstitial field matches direct solve");
+  }
+  check(result.diagnostics.normalized_residual <= 1e-11,
+        "limiter-active IMEX residual");
+  check_ledgers(result, "limiter-active IMEX");
 }
 
 void test_positivity_failure() {
@@ -587,9 +661,16 @@ void test_zero_cloud_postprocess() {
 void test_finite_failures() {
   State state = make_state(2, true);
   OperatorData op(2);
+  state.droplet_number[0] = std::numeric_limits<Real>::quiet_NaN();
+  auto result = ndrop_test::advance_imex(state, op, 1);
+  check(!result.ok &&
+            result.message == "droplet number must be finite and nonnegative",
+        "IMEX nonfinite input fails loudly");
+
+  state = make_state(2, true);
   op.pressure_weight[0] = std::numeric_limits<Real>::max();
   state.interstitial[0][0] = std::numeric_limits<Real>::max();
-  auto result = ndrop_test::advance_imex(state, op, 1);
+  result = ndrop_test::advance_imex(state, op, 1);
   check(!result.ok &&
             result.message ==
                 "aerosol column ledger exceeds the representable range",
@@ -606,6 +687,18 @@ void test_finite_failures() {
             result.message ==
                 "aerosol activation source contains a nonfinite value",
         "IMEX activation-source overflow fails loudly");
+
+  state = make_state(2, true);
+  op = OperatorData(2);
+  std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1e-200);
+  op.interface_exchange[1] = 1e-100;
+  op.number_activation_rate[0][0] = 1e100;
+  state.interstitial[0][1] = 1e300;
+  result = ndrop_test::advance_imex(state, op, 1);
+  check(!result.ok &&
+            result.message ==
+                "droplet activation source contains a nonfinite value",
+        "IMEX droplet-source overflow fails loudly");
 
   state = make_state(2, true);
   op = OperatorData(2);
@@ -630,6 +723,17 @@ void test_finite_failures() {
   check(!result.ok &&
             result.message == "zero-cloud aerosol resuspension overflowed",
         "IMEX zero-cloud resuspension overflow fails loudly");
+}
+
+void test_nonfinite_checker_probes() {
+  for (const auto probe :
+       {ndrop_test::ImexFiniteProbe::solution,
+        ndrop_test::ImexFiniteProbe::matrix_residual,
+        ndrop_test::ImexFiniteProbe::physical_residual,
+        ndrop_test::ImexFiniteProbe::ledger_normalization}) {
+    check(ndrop_test::imex_nonfinite_probe_is_rejected(probe),
+          "IMEX finite-stage checker rejects injected nonfinite value");
+  }
 }
 
 void test_coupled_cross_scheme_convergence() {
@@ -739,9 +843,11 @@ int main(int argc, char **argv) {
     test_randomized_compatible_columns();
     test_diffusion_convergence();
     test_activation_convergence();
+    test_activation_limiter_oracle();
     test_positivity_failure();
     test_zero_cloud_postprocess();
     test_finite_failures();
+    test_nonfinite_checker_probes();
     test_coupled_cross_scheme_convergence();
     test_nonfinite_assembly_failure();
   } catch (const std::exception &error) {

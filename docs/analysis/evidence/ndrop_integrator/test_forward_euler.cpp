@@ -20,6 +20,17 @@ using ndrop_test::State;
 using ndrop_test::num_constituents;
 using ndrop_test::num_modes;
 
+// This oracle intentionally duplicates the expected MAM constituent layout.
+// It must not call the harness mapping helpers, so a mapping permutation in
+// the implementation causes the analytic tests to fail.
+constexpr std::array<int, num_constituents> expected_mode = {
+    0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3};
+constexpr std::array<bool, num_constituents> expected_number = {
+    true,  false, false, false, false, false, false, false, true,
+    false, false, false, false, true,  false, false, false, false,
+    false, false, false, true,  false, false, false};
+
 int passed = 0;
 int failed = 0;
 
@@ -292,55 +303,99 @@ void test_adaptive_subcycling_avoids_clipping() {
 }
 
 void test_forced_step_clipping_accounting() {
-  State state = make_state(3, true);
   OperatorData op = make_operator(3, 2, 0, 1);
   std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1);
+  std::fill(op.cloud_fraction.begin(), op.cloud_fraction.end(), 1);
   op.interface_exchange[1] = 2;
   op.interface_exchange[2] = 2;
-  state.interstitial[0] = {10, 0.1, 0.1};
-  state.cloudborne[0] = {0, 0, 0};
 
   ForwardEulerOptions raw_options;
   raw_options.forced_substeps = 1;
   raw_options.apply_clipping = false;
-  const auto raw =
-      ndrop_test::advance_forward_euler(state, op, 1, raw_options);
-  check(raw.ok && raw.diagnostics.raw_minimum < 0,
-        "forced unstable raw step records negative value");
-  check(raw.diagnostics.clipping_count == 0,
-        "unclipped forced step does not hide negative value");
-
-  ForwardEulerOptions clipped_options;
-  clipped_options.forced_substeps = 1;
+  ForwardEulerOptions clipped_options = raw_options;
   clipped_options.apply_clipping = true;
-  const auto clipped =
-      ndrop_test::advance_forward_euler(state, op, 1, clipped_options);
-  check(clipped.ok && clipped.diagnostics.clipping_count > 0,
-        "forced unstable production-style step clips");
-  check(clipped.diagnostics.clipping_ledger_delta[0] > 0,
-        "clipping ledger increment is reported");
-  const Real total_change = clipped.diagnostics.final_ledger[0] -
-                            clipped.diagnostics.initial_ledger[0];
-  check(near(total_change,
-             clipped.diagnostics.clipping_ledger_delta[0]),
-        "total ledger change equals clipping contribution");
-  check(clipped.diagnostics.field_clipping[0].interstitial_raw_minimum < 0,
-        "interstitial raw minimum is recorded per field");
-  check(clipped.diagnostics.field_clipping[0].interstitial_count > 0,
-        "interstitial clipping count is recorded per field");
-  check(clipped.diagnostics.field_clipping[0]
-                .interstitial_weighted_deficit > 0,
-        "interstitial weighted deficit is recorded per field");
-  check(std::isfinite(
-            clipped.diagnostics.field_clipping[0].cloudborne_raw_minimum),
-        "cloudborne raw minimum is recorded per field");
+
+  for (const bool clip_interstitial : {true, false}) {
+    State state = make_state(3, true);
+    state.droplet_number =
+        clip_interstitial ? std::vector<Real>{10, 0.1, 0.1}
+                          : std::vector<Real>{1, 1, 1};
+    for (int j = 0; j < num_constituents; ++j) {
+      if (clip_interstitial) {
+        state.interstitial[j] = {10, 0.1, 0.1};
+        state.cloudborne[j] = {1, 1, 1};
+      } else {
+        state.interstitial[j] = {1, 1, 1};
+        state.cloudborne[j] = {10, 0.1, 0.1};
+      }
+    }
+
+    const auto raw =
+        ndrop_test::advance_forward_euler(state, op, 1, raw_options);
+    check(raw.ok && raw.diagnostics.raw_minimum < 0,
+          "forced unstable raw step records negative value");
+    check(raw.diagnostics.clipping_count == 0,
+          "unclipped forced step does not hide negative value");
+
+    const auto clipped =
+        ndrop_test::advance_forward_euler(state, op, 1, clipped_options);
+    const int expected_total = num_constituents +
+                               (clip_interstitial ? 1 : 0);
+    check(clipped.ok && clipped.diagnostics.clipping_count == expected_total,
+          "forced unstable step has exact clipping count");
+    check(clipped.diagnostics.droplet_clipping_count ==
+              (clip_interstitial ? 1 : 0),
+          "droplet clipping count is exact");
+    check(near(clipped.diagnostics.droplet_weighted_deficit,
+               clip_interstitial ? Real(9.8) : Real(0)),
+          "droplet clipping deficit is exact");
+    check(near(clipped.diagnostics.droplet_raw_minimum,
+               clip_interstitial ? Real(-9.8) : Real(1)),
+          "droplet raw minimum is exact");
+
+    for (int j = 0; j < num_constituents; ++j) {
+      const auto &diag = clipped.diagnostics.field_clipping[j];
+      check(diag.interstitial_count == (clip_interstitial ? 1 : 0),
+            "per-field interstitial clipping count is exact");
+      check(diag.cloudborne_count == (clip_interstitial ? 0 : 1),
+            "per-field cloudborne clipping count is exact");
+      check(near(diag.interstitial_weighted_deficit,
+                 clip_interstitial ? Real(9.8) : Real(0)),
+            "per-field interstitial clipping deficit is exact");
+      check(near(diag.cloudborne_weighted_deficit,
+                 clip_interstitial ? Real(0) : Real(9.8)),
+            "per-field cloudborne clipping deficit is exact");
+      check(near(diag.interstitial_raw_minimum,
+                 clip_interstitial ? Real(-9.8) : Real(1)),
+            "per-field interstitial raw minimum is exact");
+      check(near(diag.cloudborne_raw_minimum,
+                 clip_interstitial ? Real(1) : Real(-9.8)),
+            "per-field cloudborne raw minimum is exact");
+      check(near(clipped.diagnostics.clipping_ledger_delta[j], 9.8),
+            "per-field clipping ledger increment is exact");
+      const Real total_change = clipped.diagnostics.final_ledger[j] -
+                                clipped.diagnostics.initial_ledger[j];
+      check(near(total_change,
+                 clipped.diagnostics.clipping_ledger_delta[j]),
+            "per-field ledger change equals clipping contribution");
+    }
+  }
+
+  const State uniform = make_state(3, true);
+  const auto unclipped =
+      ndrop_test::advance_forward_euler(uniform, op, 1, clipped_options);
+  check(unclipped.ok && unclipped.diagnostics.clipping_count == 0,
+        "stable control case has no clipping");
+  check(unclipped.diagnostics.droplet_clipping_count == 0 &&
+            unclipped.diagnostics.droplet_weighted_deficit == 0,
+        "stable control has zero droplet clipping diagnostics");
   for (int j = 0; j < num_constituents; ++j) {
-    check(std::isfinite(
-              clipped.diagnostics.field_clipping[j].interstitial_raw_minimum),
-          "every interstitial raw minimum is finite");
-    check(std::isfinite(
-              clipped.diagnostics.field_clipping[j].cloudborne_raw_minimum),
-          "every cloudborne raw minimum is finite");
+    const auto &diag = unclipped.diagnostics.field_clipping[j];
+    check(diag.interstitial_count == 0 && diag.cloudborne_count == 0 &&
+              diag.interstitial_weighted_deficit == 0 &&
+              diag.cloudborne_weighted_deficit == 0 &&
+              unclipped.diagnostics.clipping_ledger_delta[j] == 0,
+          "stable control has exact zero per-field clipping diagnostics");
   }
 }
 
@@ -379,12 +434,19 @@ void test_zero_cloud_postprocess() {
 void test_finite_failures() {
   State state = make_state(2, true);
   OperatorData op(2);
+  state.droplet_number[0] = std::numeric_limits<Real>::quiet_NaN();
+  auto result = ndrop_test::advance_forward_euler(state, op, 1);
+  check(!result.ok &&
+            result.message == "droplet number must be finite and nonnegative",
+        "FE nonfinite input fails loudly: " + result.message);
+
+  state = make_state(2, true);
   state.interstitial[0][0] = std::numeric_limits<Real>::max();
   state.cloudborne[0][0] = std::numeric_limits<Real>::max();
   op.pressure_weight[0] = std::numeric_limits<Real>::min();
   op.pressure_weight[1] = std::numeric_limits<Real>::min();
   op.cloud_fraction[0] = 0;
-  auto result = ndrop_test::advance_forward_euler(state, op, 1);
+  result = ndrop_test::advance_forward_euler(state, op, 1);
   check(!result.ok &&
             result.message == "zero-cloud aerosol resuspension overflowed",
         "zero-cloud FE resuspension overflow fails loudly: " +
@@ -413,6 +475,52 @@ void test_finite_failures() {
             result.message ==
                 "aerosol activation source contains a nonfinite value",
         "FE activation-source overflow fails loudly: " + result.message);
+
+  state = make_state(2, true);
+  op = OperatorData(2);
+  std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1e-200);
+  op.interface_exchange[1] = 1e-100;
+  op.number_activation_rate[0][0] = 1e100;
+  state.interstitial[0][1] = 1e300;
+  result = ndrop_test::advance_forward_euler(state, op, 1, forced);
+  check(!result.ok &&
+            result.message ==
+                "droplet activation source contains a nonfinite value",
+        "FE droplet-source overflow fails loudly: " + result.message);
+
+  state = make_state(2, true);
+  op = OperatorData(2);
+  std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1e-300);
+  op.interface_exchange[1] = 1e-200;
+  state.interstitial[0] = {5e307, 0};
+  result = ndrop_test::advance_forward_euler(state, op, 4, forced);
+  check(!result.ok &&
+            result.message ==
+                "Forward Euler update produced a nonfinite value",
+        "FE raw-update overflow fails loudly: " + result.message);
+
+  state = make_state(2, true);
+  op = OperatorData(2);
+  std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1e100);
+  op.interface_exchange[1] = 1e200;
+  state.interstitial[0] = {1e200, 0};
+  result = ndrop_test::advance_forward_euler(state, op, 1, forced);
+  check(!result.ok &&
+            result.message ==
+                "Forward Euler clipping diagnostic overflowed",
+        "FE clipping-deficit overflow fails loudly: " + result.message);
+
+  state = make_state(2, true);
+  op = OperatorData(2);
+  std::fill(op.pressure_weight.begin(), op.pressure_weight.end(), 1e100);
+  op.interface_exchange[1] = 1e200;
+  state.interstitial[0] = {1e108, 0};
+  state.cloudborne[0] = {1e108, 0};
+  result = ndrop_test::advance_forward_euler(state, op, 1, forced);
+  check(!result.ok &&
+            result.message ==
+                "Forward Euler clipping ledger diagnostic overflowed",
+        "FE clipping-ledger overflow fails loudly: " + result.message);
 }
 
 struct ErrorPair {
@@ -632,23 +740,25 @@ PairSolution exact_activation_pair(
 
 void test_all_field_activation_convergence() {
   constexpr Real d = 0.5;
-  constexpr Real number_activation = 0.2;
-  constexpr Real mass_activation = 0.1;
+  constexpr std::array<Real, num_modes> number_activation = {0.11, 0.17,
+                                                              0.23, 0.29};
+  constexpr std::array<Real, num_modes> mass_activation = {0.07, 0.13, 0.19,
+                                                            0.25};
   constexpr Real total_time = 1;
   State initial = make_state(2);
   State exact = initial;
   OperatorData op(2);
   op.interface_exchange[1] = d;
   for (int mode = 0; mode < num_modes; ++mode) {
-    op.number_activation_rate[mode][0] = number_activation;
-    op.mass_activation_rate[mode][0] = mass_activation;
+    op.number_activation_rate[mode][0] = number_activation[mode];
+    op.mass_activation_rate[mode][0] = mass_activation[mode];
   }
 
   std::array<std::array<Real, 2>, num_modes> number_forcing{};
   for (int j = 0; j < num_constituents; ++j) {
-    const Real activation = ndrop_test::constituent_is_number(j)
-                                ? number_activation
-                                : mass_activation;
+    const int mode = expected_mode[j];
+    const Real activation = expected_number[j] ? number_activation[mode]
+                                                : mass_activation[mode];
     const auto solution = exact_activation_pair(
         {initial.interstitial[j][0], initial.interstitial[j][1]},
         {initial.cloudborne[j][0], initial.cloudborne[j][1]}, d, activation,
@@ -657,10 +767,9 @@ void test_all_field_activation_convergence() {
                              solution.interstitial[1]};
     exact.cloudborne[j] = {solution.cloudborne[0],
                            solution.cloudborne[1]};
-    if (ndrop_test::constituent_is_number(j)) {
-      const int mode = ndrop_test::constituent_mode(j);
+    if (expected_number[j]) {
       number_forcing[mode] =
-          forced_cloud_pair({0, 0}, d, number_activation, total_time,
+          forced_cloud_pair({0, 0}, d, number_activation[mode], total_time,
                             solution.coefficient_a, solution.coefficient_b,
                             solution.rate_a, solution.rate_b);
     }
