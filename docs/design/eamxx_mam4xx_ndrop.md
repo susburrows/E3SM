@@ -1070,6 +1070,106 @@ branch of the current `max(0,tmpa)` expression or produces a negative combined
 a positivity failure rather than silently changing the equation. A block
 cyclic-reduction GPU solver is deferred.
 
+### Linearity and algebraic structure
+
+The full activation parameterization is nonlinear when supersaturation,
+particle size, activation fractions, diffusivity, or cloud geometry are
+recomputed from the evolving model state. The isolated integrator problem in
+this design is narrower: mixing coefficients, overlap, `nact`, `mact`, and all
+geometry are frozen over an ACI call. Under that contract, the mixing operator
+is linear and each activation source has a frozen coefficient multiplying the
+tracer state. Neither the approved IMEX method nor the proposed Backward Euler
+method requires a nonlinear iteration or Newton solve.
+
+The complete IMEX aerosol update is not one scalar tridiagonal system. For each
+interstitial/cloud-borne pair it has the block-lower-triangular form
+
+\[
+\begin{bmatrix} A_C & 0 \\ -\Delta t R & A_I \end{bmatrix}
+\begin{bmatrix} C^{n+1} \\ I^{n+1} \end{bmatrix}
+=
+\begin{bmatrix} b_C \\ b_I \end{bmatrix},
+\qquad
+A_C=I-\Delta tL_C,\quad A_I=I-\Delta tL_I.
+\]
+
+It is therefore solved in sequence: solve the cloud-borne and droplet scalar
+tridiagonal systems, form the cloud-to-interstitial return from the new
+cloud-borne state, and then solve the interstitial scalar tridiagonal systems.
+This structure permits the existing scalar EKAT solver to be used with many
+right-hand sides. Backward Euler couples activation between `C` and `I` at the
+new time level, so each aerosol pair is block tridiagonal, but it remains a
+linear block solve while the coefficients remain frozen.
+
+The problem becomes genuinely nonlinear if a future method recomputes
+activation rates, sizes, supersaturation, diffusivity, overlap, or branch
+conditions from the unknown new state. Production Forward Euler clipping is
+also nonlinear and nonsmooth. The candidate IMEX and Backward Euler methods do
+not include that clipping; zero-cloud resuspension/reset is applied after the
+advance for a fixed cloud mask. The bottom-level `max(0,tmpa)` branch remains
+an explicitly reported excluded case whenever a candidate solve would change
+its active branch.
+
+### Linear-solver and integration-library boundary
+
+EKAT is the **E3SM Kokkos Application Toolkit** in `externals/ekat`. Its
+header-only `ekat_tridiag.hpp` supports diagonally dominant scalar
+tridiagonal systems with one matrix and one or many right-hand sides, or many
+independent matrices. It provides serial and team Thomas algorithms for CPU
+execution and Kokkos-team cyclic reduction intended for GPU execution. The
+arrays use `LayoutRight`, and the implementation is designed to solve many
+independent atmospheric columns concurrently.
+
+EKAT supplies the algebraic solve, not the `ndrop` integration method. An IMEX
+implementation still needs a thin `ndrop`-specific layer to evaluate the
+explicit activation source, assemble matrices and right-hand sides, solve the
+cloud-borne fields before the interstitial fields, apply the common zero-cloud
+state transition, and report positivity and ledger diagnostics. The preferred
+first production prototype, if separately approved, is therefore a small
+`ndrop` IMEX-Euler implementation using EKAT's multiple-right-hand-side
+tridiagonal solver rather than a new tridiagonal solver.
+
+General integration packages remain useful reference or later-stage options.
+SUNDIALS ARKODE supplies additive Runge-Kutta IMEX methods, and PETSc supplies
+`TSARKIMEX`, but either package would still require `ndrop`-specific explicit
+and implicit callbacks, state adapters, matrix/Jacobian integration, the
+zero-cloud transition, positivity checks, and GPU column batching. That is
+disproportionate integration work for the current fixed-step, first-order
+screen. SUNDIALS could be valuable as an independent standalone reference, for
+higher-order or adaptive IMEX experiments, or if future physics makes the
+implicit problem nonlinear. Before production use, it would need a dependency,
+Kokkos-version, device-memory, and batched-performance gate; the SUNDIALS
+installation documentation inspected for this review reports Kokkos testing
+only through 4.3.01, whereas the local E3SM evidence used Kokkos 4.5.1. Neither
+SUNDIALS nor PETSc was used by the current standalone harness.
+
+### Other implicit candidates (not authorized)
+
+Backward Euler remains the required fully implicit baseline because it is
+simple, strongly damps stiff modes, and exposes the coupled block system
+directly. If that baseline shows unacceptable first-order damping or accuracy,
+the next method should be **one** two-stage, second-order, L-stable scheme:
+SDIRK2/ESDIRK2 or TR-BDF2. Both can reuse the same basic matrix structure over
+their stages and are more relevant than RK4 to this stiff problem, but they
+roughly double the solve work and do not guarantee positivity.
+
+| Candidate | Potential value | Critical limitation for `ndrop` | Priority |
+|---|---|---|---|
+| SDIRK2/ESDIRK2 | Second order and L-stable; repeated diagonal coefficient can permit matrix reuse | Two implicit stages; positivity is not guaranteed | First higher-order candidate |
+| TR-BDF2 | Second order and L-stable with favorable stiff damping | Two-stage implementation and validation; positivity is not guaranteed | Comparable alternative to SDIRK2 |
+| BDF2 | Second order with one solve after startup | Requires reliable process-local history and startup; other split physics modifies aerosol between ACI calls | Lower priority |
+| Crank-Nicolson or implicit midpoint | Second order with one solve | A-stable but not L-stable; stiff modes can oscillate and produce negative values | Not recommended for the first screen |
+| Rosenbrock-W/ROS2 | Linearly implicit and well matched to a frozen linear operator | Two solves and additional stage machinery; not a conventional fully implicit step | Secondary option |
+| Higher-order Radau/implicit Runge-Kutta | High-order stiff accuracy | Multiple coupled stages are too costly for an initial 51-field column solve | Defer |
+| Modified Patankar methods | Can target simultaneous positivity and conservation for production-destruction systems | Requires a new derivation for diffusion, overlap, and paired transfer; not a drop-in implicit solve | Separate research track |
+
+Higher formal order inside `ndrop` may not increase whole-model order if
+frozen coefficients or outer ACI/process splitting dominate the error. The
+decision sequence is therefore: finish and validate Backward Euler, compare
+its damping and matched-error cost with FE and IMEX, and add SDIRK2/ESDIRK2 or
+TR-BDF2 only if the evidence shows that a higher-order implicit method is
+needed. RK4 remains outside the planned screening suite.
+
 ### Algebraic invariants
 
 For pressure weights \(w_k=\Delta p_k/g=1/z_{n,k}\), coefficient assembly must
@@ -1397,18 +1497,28 @@ performance. It assumes the level-zero boundary defect is corrected, mixing is
 enabled, and the estimated `max_tinv` ranges above represent the runtime
 distribution.
 
-The three formulations are defined here as follows:
+The principal alternatives and their present status are:
 
-- **Forward Euler** is the current implementation. Its cost is proportional to
-  `nsubmix`; one explicit substep is the normalized unit of work.
-- **IMEX** evaluates activation and cloud-fraction source terms from the old
-  state and treats vertical mixing implicitly. This leaves scalar tridiagonal
-  systems with many right-hand sides.
-- **Backward Euler** treats both vertical mixing and the state-dependent
-  activation transfer implicitly. This couples each interstitial/cloud-borne
-  aerosol pair and requires a block-tridiagonal solve or an equivalent coupled
-  algorithm. Treating only mixing implicitly while retaining explicit sources
-  is IMEX under these definitions.
+| Method | Main advantage | Main disadvantage or risk | GPU work pattern | Current status |
+|---|---|---|---|---|
+| Current subcycled Forward Euler | Exact production behavior; very low overhead when `nsubmix` is one; repeated short steps can resolve the frozen operator accurately | Stability requires many sequential vertical passes in strong mixing; work varies by column; clipping can alter aerosol ledgers | Many fields can run in parallel, but levels and substeps are sequential and high-`nsubmix` columns create a long tail | Standalone automated remediation suite passes; independent gate re-review remains required |
+| IMEX-Euler | Removes the explicit mixing stability restriction; uses two shared scalar tridiagonal matrix families with many right-hand sides; fixed work per call | Explicit activation is lagged over the ACI interval; raw positivity can fail; solve overhead can exceed FE for `nsubmix` of one or two; first-order | EKAT cyclic reduction can expose parallelism within each column and across fields/columns | Standalone automated remediation suite passes; independent gate re-review remains required; no GPU implementation or timing |
+| Fully implicit Backward Euler | Removes the mixing restriction and evaluates activation transfer at the new state; likely more robust when explicit-source lag matters | Requires custom 2-by-2 block-tridiagonal solves; more flops and workspace; first-order stiff damping can reduce accuracy; positivity is not guaranteed | Fixed work, but the coupled block solver is not supplied by the current EKAT scalar interface | Designed but blocked until FE and IMEX pass independent re-review; not implemented |
+| Hybrid FE/IMEX | Retains the cheap FE path for low-`nsubmix` columns and targets IMEX at the expensive tail | Requires classification/batching or compaction, a threshold policy, two maintained paths, and validation at the switch boundary | Potentially best production GPU balance if high-`nsubmix` columns can be batched efficiently | Provisional concept only; requires profiling and a separate design gate |
+
+The provisional GPU ranking is hybrid FE/IMEX if high-`nsubmix` columns can be
+batched efficiently, otherwise IMEX for strong-mixing columns and current FE
+for low-`nsubmix` columns. Fully implicit Backward Euler becomes preferable
+only if evidence shows that IMEX source lag or positivity failures outweigh
+its extra block-solve cost. This ranking is a source-based hypothesis, not a
+measured GPU result.
+
+Removing a stability restriction does not establish adequate accuracy. Several
+short Forward Euler substeps can be more accurate than one first-order IMEX or
+Backward Euler step over the full ACI interval. Performance decisions must
+therefore compare runtime at matched error, not only runtime for equal outer
+intervals, and must reject candidate timesteps that fail the raw-positivity or
+ledger criteria.
 
 All listed default horizontal resolutions use the same L128 grid. Approximate
 layer thicknesses are 24-52 m in the lowest kilometre and 54-127 m from 1-2 km.
@@ -1429,9 +1539,11 @@ For provisional estimates, one optimized IMEX call is assigned a cost of
 **1.5-3 Forward Euler substeps**. A fully coupled Backward Euler call is assigned
 **3-5 Forward Euler substeps** because the paired activation terms make the
 system more complicated than EKAT's existing scalar multi-right-hand-side
-case. These ranges include matrix/RHS assembly and GPU synchronization, but not
-development cost or changes elsewhere in ACI. A field-by-field implementation
-that does not reuse matrices can be substantially slower.
+case. The system is still linear under the frozen-operator contract; the added
+cost comes from its 2-by-2 block structure, not a nonlinear iteration. These
+ranges include matrix/RHS assembly and GPU synchronization, but not development
+cost or changes elsewhere in ACI. A field-by-field implementation that does
+not reuse matrices can be substantially slower.
 
 The tables report estimated vertical-mixing-loop runtime relative to current
 Forward Euler runtime; values below one are faster. They use a representative
@@ -1777,11 +1889,21 @@ diagnostic overhead, but it is not part of the current run matrix.
   105(D5), 6837-6844.
 - Ghan, S. J., C. C. Chuang, and J. E. Penner (1993), A parameterization of
   cloud droplet nucleation, *Atmospheric Research*, 30, 198-221.
+- Alexander, R. (1977), [Diagonally implicit Runge-Kutta methods for stiff
+  O.D.E.'s](https://epubs.siam.org/doi/10.1137/0714068), *SIAM Journal on
+  Numerical Analysis*, 14, 1006-1021.
+- [SUNDIALS ARKODE user documentation](https://sundials.readthedocs.io/en/latest/arkode/Usage/General.html)
+  and [Kokkos installation notes](https://sundials.readthedocs.io/en/latest/sundials/Install_link.html).
+- [PETSc `TSARKIMEX` documentation](https://petsc.org/release/manualpages/TS/TSType/).
+- Kopecz, S., and A. Meister (2018), [On order conditions for modified
+  Patankar-Runge-Kutta schemes](https://www.sciencedirect.com/science/article/pii/S0168927417301861),
+  *Applied Numerical Mathematics*, 123, 159-179.
 
 ## Revision History
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-03 | Codex | Clarified that the frozen isolated operator is linear; documented the sequential scalar-tridiagonal IMEX structure, the block-tridiagonal Backward Euler structure, the EKAT versus integration-library boundary, current FE/IMEX/BE/hybrid trade-offs, and deferred higher-order implicit candidates. No production implementation was authorized. |
 | 2026-07-30 | Codex | Synchronized the remediation as built: added exact zero-cloud resuspension/reset, deterministic finite-value failures, scaled and independently assembled residuals, per-field Forward Euler clipping diagnostics, all-field analytic convergence, coupled FE/IMEX convergence, and debug/sanitizer plus optimized evidence. The automated suites pass; independent gate re-review remains required. |
 | 2026-07-30 | User / Codex | Recorded explicit approval of the validation-gate remediation amendment, authorizing standalone harness and test remediation while keeping Backward Euler blocked until both remediated gates pass. |
 | 2026-07-29 | Codex | Added the pending remediation amendment after independent review failed both completed gates: made zero-cloud resuspension/reset part of the canonical state transition, required fail-loud handling of nonfinite derived quantities and diagnostics, expanded all-field activation and coupled convergence coverage, restored per-field Forward Euler clipping requirements, required an independently assembled residual check, and required coherent committed gate provenance. |

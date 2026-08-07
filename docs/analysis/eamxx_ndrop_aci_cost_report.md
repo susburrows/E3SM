@@ -2,7 +2,7 @@
 
 Date: 2026-06-16
 
-Last updated: 2026-07-21
+Last updated: 2026-08-03
 
 ## Scope
 
@@ -337,11 +337,11 @@ an unwritten work array. Keep the switch at its default value, `true`, until the
 disabled path is corrected and tested. The executed evidence is documented in
 [`eamxx_mam4xx_ndrop_defect_brief.md`](eamxx_mam4xx_ndrop_defect_brief.md).
 
-### Changes made before and after the explicit loop
+### Changes made before and after the explicit vertical mixing loop
 
-Separate code responds to changes in cloud fraction. These changes occur
-within one model level; they are not vertical transport between neighboring
-levels:
+Separate code within `ndrop` responds to changes in cloud fraction. These
+changes occur within one model level; they are not vertical transport between
+neighboring levels:
 
 - **Growing cloud:** activated aerosol moves from interstitial to cloud-borne,
   and cloud-droplet number increases.
@@ -680,6 +680,58 @@ No evidence was found that the default numerical values of `coeff_kh` or
 options, later rename, and changes to the surrounding eddy-diffusivity closure
 logic.
 
+## Candidate Integration Strategies
+
+The isolated numerical work changes the integration of the frozen `ndrop`
+mixing/activation operator, not the activation physics itself. With mixing,
+overlap, geometry, and activation coefficients held fixed, the test problem is
+linear. The broader activation calculation is nonlinear when those quantities
+are recomputed, and production Forward Euler clipping is a nonlinear,
+nonsmooth operation.
+
+| Strategy | Main performance opportunity | Main accuracy or implementation risk | Current evidence |
+|---|---|---|---|
+| Current subcycled Forward Euler | Cheapest when `nsubmix` is one; no solve setup | Strong mixing requires many sequential substeps and vertical passes; clipping can change the aerosol ledger | Exact-current standalone comparisons pass at safe boundaries; automated remediation suite passes pending independent re-review |
+| IMEX-Euler | Replaces stability-driven substeps with fixed scalar tridiagonal solves over many right-hand sides | Explicit activation is lagged for the ACI interval; raw positivity can fail; overhead can lose when `nsubmix` is one or two | CPU correctness and first-order convergence suite passes pending independent re-review; no production or GPU timing |
+| Fully implicit Backward Euler | Treats activation and mixing at the new state and removes the explicit mixing restriction | Needs a custom 2-by-2 block-tridiagonal solver; more work and storage; first-order damping; positivity is not guaranteed | Designed but not implemented; blocked behind FE and IMEX gate re-review |
+| Hybrid FE/IMEX | Keeps low-cost FE columns and applies IMEX only to the expensive high-`nsubmix` tail | Requires device-side classification/batching, a tested threshold, and two maintained numerical paths | Provisional GPU-oriented concept only |
+
+The provisional GPU preference is hybrid FE/IMEX if expensive columns can be
+batched efficiently. Otherwise, use IMEX as the leading candidate for the
+strong-mixing tail and retain Forward Euler where `nsubmix` is one or two.
+Backward Euler is primarily a fallback if IMEX source lag or raw-positivity
+failures prove material. This ordering is not based on measured GPU timing.
+
+For IMEX, the complete aerosol pair is block lower triangular, not one scalar
+tridiagonal matrix. It can nevertheless be solved as two sequential scalar
+tridiagonal families: cloud-borne aerosol first, then interstitial aerosol
+after adding the cloud-to-interstitial return. EKAT, the E3SM Kokkos
+Application Toolkit, already supplies CPU Thomas and GPU-oriented cyclic-
+reduction solvers for scalar tridiagonal matrices with multiple right-hand
+sides. An `ndrop` implementation would still need custom source evaluation,
+matrix/right-hand-side assembly, solve ordering, zero-cloud handling,
+positivity checks, and ledger diagnostics.
+
+SUNDIALS ARKODE and PETSc `TSARKIMEX` are possible reference or later-stage
+integration frameworks, but neither removes that `ndrop`-specific work. For the
+current fixed-step first-order method, a small custom IMEX update using EKAT is
+the lower-complexity production concept. SUNDIALS becomes more attractive for
+an independent oracle, adaptive or higher-order IMEX, or future nonlinear
+implicit physics; dependency, Kokkos-version, device-memory, and column-batch
+performance would need separate qualification.
+
+Stability and accuracy must be evaluated separately. Several short Forward
+Euler steps can be more accurate than one first-order implicit step over the
+same ACI interval. Any performance comparison used for a method decision must
+therefore include matched-error results as well as equal-interval timings.
+Backward Euler is the required implicit baseline; if its damping or first-order
+accuracy is inadequate, the first higher-order candidates are a two-stage
+second-order L-stable SDIRK2/ESDIRK2 or TR-BDF2 method. BDF2 is less convenient
+because other split physics modifies aerosol between ACI calls, and Crank-
+Nicolson is a poor first choice because stiff modes can oscillate. Modified
+Patankar methods are a separate positivity-and-conservation research track.
+RK4 is not part of the current screening plan.
+
 ## Recommended Diagnostics
 
 ### Existing diagnostics for the current five-day runs
@@ -744,6 +796,7 @@ adaptive-work measurements.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-03 | Codex | Added the current FE, IMEX, Backward Euler, and hybrid comparison; clarified the frozen problem's linear structure, EKAT and external-library roles, matched-error requirement, GPU implications, and deferred higher-order candidates. |
 | 2026-07-21 | User / Codex | Corrected the disabled-mixing description to distinguish vertical transport from activation, cover aerosol number as well as mass, and explain the unwritten interstitial destination for every tested substep count. |
 | 2026-07-21 | User / Codex | Clarified that Fortran EAMv3 contains the same adaptive explicit mixing subloop and summarized its execution and boundary differences from EAMxx. |
 | 2026-07-21 | User / Codex | Verified that E3SM v3.0.0 Fortran always applies both sides of aerosol activation and does not contain the EAMxx disabled-mixing switch defect. |

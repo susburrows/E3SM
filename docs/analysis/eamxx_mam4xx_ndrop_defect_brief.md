@@ -18,6 +18,8 @@ inspection alone.
 
 The level-zero boundary defect is tracked publicly in
 [MAM4xx issue 564](https://github.com/eagles-project/mam4xx/issues/564).
+The disabled-mixing defect is tracked in
+[MAM4xx issue 566](https://github.com/eagles-project/mam4xx/issues/566).
 
 ## Inspected Revisions
 
@@ -261,6 +263,36 @@ cloud-borne amount, provided neither update is changed by positivity clipping
 and no relevant boundary flux is present. This comparison rules out the same
 asymmetric option-path defect in Fortran EAMv3; it does not establish exact
 conservation for every operation or physical state in that code.
+
+### Switch history and later upstream changes
+
+The underlying MAM4xx switch was developed on 2024-11-28 in commit
+[`5cf8a3e7`](https://github.com/eagles-project/mam4xx/commit/5cf8a3e7f5a4bfbbfdc867923b262967e3d88261)
+and entered the MAM4xx main-line history on 2024-12-09 in commit
+[`d42b7f28`](https://github.com/eagles-project/mam4xx/commit/d42b7f28517b39f5614d948a17f3206e94578c9a).
+EAMxx exposed it as the `enable_aero_vertical_mix` namelist parameter on
+2025-01-21 in E3SM commit
+[`e0f5caed`](https://github.com/E3SM-Project/E3SM/commit/e0f5caed2e4d2397afd3a0aa96dfc346347f94bf).
+That commit initially set the default to `false`; commit
+[`4e1433f7`](https://github.com/E3SM-Project/E3SM/commit/4e1433f7bfe7c1a7d2c6caf7a446fdfd1eaac948)
+restored the default behavior by changing it to `true` later the same day.
+The inspected E3SM/MAM4xx revision therefore contains the parameter and uses
+`true` by default. The E3SMv3 Fortran implementation has no equivalent
+namelist parameter.
+
+After the evidence revision used in this brief, MAM4xx `main` commit
+[`0b100fb3`](https://github.com/eagles-project/mam4xx/commit/0b100fb3d2a5e3b398e9e879bd1f25957e713594)
+changed the level-zero indexing on 2026-07-22. Separate development-branch
+commit
+[`de59c6ee`](https://github.com/eagles-project/mam4xx/commit/de59c6ee32d7949884459c30ffbdafc5eb21b4e6)
+changed the disabled path on 2026-07-22, and development-branch commit
+[`a4e126dc`](https://github.com/eagles-project/mam4xx/commit/a4e126dceeb65a62dba24781febf1c0f7876f614)
+removed the switch on 2026-08-02. As checked on 2026-08-03, the latter two
+commits had **not** entered MAM4xx `main`. None of these later revisions was
+part of the executed tests summarized here. The confirmed-defect
+classifications apply to the inspected revision; the level-zero change and any
+future disabled-path change require their own regression evidence after the
+corresponding MAM4xx revision enters the E3SM gitlink and production call path.
 
 ### Ping-pong state exposure
 
@@ -509,6 +541,7 @@ maintained in
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-03 | Codex | Added issue 566, the MAM4xx and EAMxx switch-introduction timeline, the absence of a Fortran equivalent, and a clearly separated note about the later unvalidated main-line boundary change and development-branch disabled-path changes. |
 | 2026-07-21 | User / Codex | Recorded MAM4xx issue 564 as the public tracker for the level-zero boundary defect. |
 | 2026-07-21 | User / Codex | Verified against E3SM v3.0.0 that Fortran applies both signs of every activation transfer and does not contain the EAMxx disabled-mixing switch defect. |
 | 2026-07-21 | User / Codex | Clarified the conservative same-level cloud-fraction-driven repartitioning that remains outside the vertical-mixing switch and distinguished it from the disabled-substep defect. |

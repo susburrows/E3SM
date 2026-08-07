@@ -43,6 +43,25 @@ overlap ledgers, residuals, fail-loud positivity behavior, and first-order
 convergence against discrete no-flux diffusion and closed-form two-level
 activation-plus-mixing solutions.
 
+## Solver structure and scope
+
+EKAT is the E3SM Kokkos Application Toolkit. The harness uses its scalar
+tridiagonal Thomas solver; it does not implement a new general-purpose linear
+solver. With the harness coefficients frozen, the tested operator is linear.
+For each aerosol pair, the complete IMEX system is block lower triangular: the
+cloud-borne state is solved first with one scalar tridiagonal matrix, its
+cloud-to-interstitial return is added to the next right-hand side, and the
+interstitial state is solved with a second scalar tridiagonal matrix. Droplet
+number shares the cloud-borne matrix family.
+
+The `ndrop`-specific IMEX source evaluation, matrix/right-hand-side assembly,
+solve order, zero-cloud transition, positivity checks, and ledger diagnostics
+are implemented in the standalone harness. SUNDIALS and PETSc are not used.
+The harness also does not implement EKAT's GPU cyclic-reduction path, Backward
+Euler's coupled block-tridiagonal solve, a hybrid FE/IMEX policy, or any
+higher-order implicit method. Those are separate, unvalidated stages and are
+not implied by the CPU correctness results below.
+
 ## Remediation validation
 
 An independent review on 2026-07-29 rejected the original Forward Euler and
