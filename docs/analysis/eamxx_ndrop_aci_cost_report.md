@@ -2,17 +2,18 @@
 
 Date: 2026-06-16
 
-Last updated: 2026-08-03
+Last updated: 2026-08-17
 
 ## Scope
 
 This report summarizes the findings from a code and configuration review of
 EAMxx MAM4xx aerosol-cloud interaction (ACI), focusing on the `ndrop`
 activation/mixing path, its explicit mixing subcycling, and the turbulence
-quantities that drive its cost. This is an analysis artifact only; no
-implementation code was changed.
+quantities that drive its cost. The report also records the first short
+subcycle benchmark and a draft diagnostic-only pull request. The draft does
+not change the `ndrop` physics or numerical method.
 
-The focused bounds and paired-ledger investigation is reported in
+The focused bounds and mass/number accounting investigation is reported in
 [`eamxx_mam4xx_ndrop_defect_brief.md`](eamxx_mam4xx_ndrop_defect_brief.md).
 The reconstructed as-built equations, interfaces, validation contract, and
 diagnostic design are maintained in
@@ -35,7 +36,7 @@ components/eam/src/physics/cam/ndrop.F90
 
 ## Current Investigation Snapshot
 
-The executable boundary and paired-ledger evidence was collected against:
+The executable boundary and mass/number accounting evidence was collected against:
 
 | Repository | Evidence revision |
 |---|---|
@@ -49,8 +50,8 @@ files have no changes between the evidence revision and this checkout. The
 source reachability conclusions and executed MAM4xx evidence therefore remain
 applicable.
 
-The current experiment matrix is limited to matched five-day `ne256` runs with
-an experiment-specific fixed physics timestep of 600 s:
+The planned experiment matrix used matched `ne256` runs with an
+experiment-specific fixed physics timestep of 600 s:
 
 | Case | MAC/ACI subcycles | ACI timestep |
 |---|---:|---:|
@@ -60,9 +61,9 @@ an experiment-specific fixed physics timestep of 600 s:
 | `SUB-12` | 12 | 50 s |
 
 The 600 s value is a test setting, not the default `ne256` physics timestep
-used in the resolution-estimate table below. No separate extended runs are
-currently planned. No production GPU profile or actual `nsubmix` distribution
-has yet been collected.
+used in the resolution-estimate table below. The first analysis supplied from
+these cases covers a six-hour DYCOMS RF01 period. No production GPU profile or
+actual `nsubmix` distribution has yet been collected.
 
 The minimum existing-output contract for every case is:
 
@@ -79,6 +80,98 @@ Use identical cadence, remapping or supported sampling, compression, and I/O
 layout in every case, and retain the I/O timers. These fields provide context
 but cannot reconstruct actual inner-loop work because normal history output
 sees only the final MAC subcycle.
+
+## Evidence From the Initial Subcycle Benchmark
+
+The values in this section are approximate readings from the supplied plots,
+not direct analysis of the timing files. They should be replaced by tabulated
+timer output when it is available.
+
+### Performance
+
+Total MAM4xx ACI, SHOC, and P3 time increases nearly in proportion to the
+configured number of `mac_aero_mic` subcycles. The reported
+`call_function_dropmixnuc` time increases more slowly:
+
+| Case | Outer subcycles | Approximate `call_function_dropmixnuc` time (mean-rank s) |
+|---|---:|---:|
+| `SUB-02` | 2 | 0.077 |
+| `SUB-04` | 4 | 0.104 |
+| `SUB-06` | 6 | 0.132 |
+| `SUB-12` | 12 | 0.212 |
+
+From `SUB-02` to `SUB-04`, the measured region increases by about 0.027 s, or
+35%, while the configured outer subcycle count doubles. Across all four cases,
+the plotted points are closely described by
+
+```text
+T_dropmixnuc approximately 0.050 s + 0.0135 s * outer_subcycles
+```
+
+One plausible explanation is that stability-driven explicit mixing work is
+approximately fixed over a 600 s physics step: shortening each ACI call tends
+to reduce `nsubmix` per call, while increasing the number of calls. Work that
+must occur once per ACI call supplies the growing part. This is a useful
+working model, not an established attribution. The actual `nsubmix` count was
+not output, the timer's exact normalization still needs confirmation, and the
+timed wrapper includes more than the explicit loop.
+
+The kernel plot also shows substantial time in interstitial aerosol updates
+and heterogeneous-freezing tendency calculations. The listed kernels account
+for only a small fraction of the full MAM4xx ACI timer, so the current plots do
+not support a claim that the explicit loop is the dominant ACI cost. An
+implicit method can remove only the stability-driven portion of that loop; it
+cannot remove packing, activation, state updates, heterogeneous freezing, or
+other per-call work.
+
+### Physical response
+
+The short runs show clear timestep sensitivity, especially for `SUB-02`:
+
+- Run-mean and final-time `w_variance` profiles differ most for `SUB-02` near
+  cloud top. `SUB-04`, `SUB-06`, and `SUB-12` are closer but not identical.
+- `eddy_diff_heat` shows a similar pattern, with meaningful differences in the
+  cloud layer and a particularly variable final-time peak near cloud base.
+- Ten-meter wind speed is very similar across cases after the initial
+  adjustment, although `SUB-02` remains modestly lower for several hours.
+- Cloud-top effective droplet radius and cloud-top droplet number remain
+  visibly sensitive to subcycle count. More subcycles generally produce
+  larger cloud-top droplets and fewer cloud-top droplets by the end of the
+  six-hour period.
+- Surface liquid precipitation is strongly sensitive in this short transient,
+  including late growth in `SUB-12`. It is not yet clear whether this is a
+  converged response or a difference in the timing of precipitation onset.
+- The plotted SO2 endpoint decreases monotonically as subcycles increase and
+  is not clearly converged by `SUB-12`. A `SUB-24` case or process-tendency
+  analysis would be needed before attributing that response.
+
+Shortwave radiation was disabled in this DYCOMS configuration, so shortwave
+cloud forcing is not a useful diagnostic for these runs. Longwave cloud
+forcing was not requested for the first follow-up because the turbulence and
+cloud-top microphysical plots were more directly relevant.
+
+### Implications for changing the process schedule
+
+Running warm-cloud ACI less often while keeping SHOC and P3 at their current
+subcycle frequency could save more time than changing only the inner mixing
+solver, because it would avoid whole MAM4xx ACI calls. The six-hour results,
+however, show that cloud droplet number, droplet size, turbulence, and
+precipitation respond to that schedule. A reduced ACI frequency therefore
+requires scientific convergence tests, not only timing tests.
+
+Ice nucleation must remain tightly coupled to P3. Reducing all MAM4xx ACI calls
+would also reduce the frequency of ice-nucleation information supplied to P3,
+which is not an acceptable default experiment. A safer scheduling study would
+separate warm-cloud activation from ice nucleation and keep the latter at the
+P3 cadence. The heterogeneous-freezing rate calculation is also likely
+timestep sensitive under realistic conditions; its rate formulation and its
+coupling to P3 are a separate numerical-design problem.
+
+Compared with schedule splitting, an IMEX mixing solver preserves the current
+frequency and ordering of ACI, ice nucleation, and P3. That is its main
+scientific advantage. Its disadvantages are implementation complexity, an
+implicit solve on every ACI call, and uncertain GPU benefit until the actual
+`nsubmix` distribution and scoped timings are measured.
 
 ## Main Conclusions
 
@@ -126,16 +219,18 @@ nsubmix = floor(dtmicro * max_tinv / 0.9) + 1
 result follows. There is no hard cap on `nsubmix` in the C++ EAMxx/MAM4xx
 implementation.
 
-Two correctness findings are now established by executed focused tests:
+Two correctness findings were established by executed focused tests at the
+older evidence revisions listed above:
 
 1. **Boundary indexing is a confirmed defect.** The default L128 input
    `top_lev=0` reaches `eddy_diff(-1)` and `csbot(-1)`. A Kokkos
    bounds-checked 128-level execution aborts at index `-1`.
 2. **Disabled vertical mixing is a confirmed defect.** The public
-   `enable_aero_vertical_mix=false` setting advances cloud-borne aerosol while
-   skipping paired interstitial and droplet-number updates. Deterministic one-,
-   two-, and three-substep tests failed all 25 aerosol pair ledgers, while the
-   enabled controls conserved them to roundoff.
+   `enable_aero_vertical_mix=false` setting advanced cloud-borne aerosol while
+   skipping the corresponding interstitial and droplet-number updates. Tests
+   with one, two, and three substeps failed the mass/number conservation check
+   for all 25 aerosol pairs, while the enabled controls conserved them to
+   roundoff.
 
 The level-zero invalid read need not crash an optimized GPU run. Bounds checks
 are normally disabled, and the row-major scratch layout can make a negative
@@ -147,6 +242,13 @@ column-wide `max_tinv`, `nsubmix`, and `dtmix`: a positive value can add
 unnecessary work, while a negative value can under-subcycle and trigger
 forward-Euler clipping. NaN, infinity, unmapped memory, or execution-order
 changes can produce more severe or nondeterministic symptoms.
+
+Current MAM4xx main includes PR #567 (`0b100fb3d`), which replaces the unsafe
+`eddy_diff(k-1)` access with the clipped `eddy_diff(km1)` index. It also
+includes PR #572, which removes the operational disabled-mixing switch and
+always performs the mixing update. The diagnostic branch uses both changes;
+the defects above remain relevant to older revisions, not as active paths in
+that branch.
 
 ## ACI Time Step and Subcycling
 
@@ -200,11 +302,12 @@ eddy_diff_kp(k)
 eddy_diff_km(k)
 ```
 
-The mixing rates are computed approximately as:
+At the current diagnostic revision, the mixing rates are computed
+approximately as:
 
 ```text
-eddy_diff_kp(k) = zn(k) * eddy_diff(k)     * csbot(k)     * zs(k)
-eddy_diff_km(k) = zn(k) * eddy_diff(k - 1) * csbot(k - 1) * zs(km1)
+eddy_diff_kp(k) = zn(k) * eddy_diff(k)   * csbot(k)   * zs(k)
+eddy_diff_km(k) = zn(k) * eddy_diff(km1) * csbot(km1) * zs(km1)
 ```
 
 where:
@@ -215,6 +318,11 @@ rpdel = 1 / pdel
 zs = inverse distance between midlevels
 csbot = interface-density-related factor
 ```
+
+The older evidence revision used `k-1` rather than `km1` in the second
+expression. That historical formula caused the confirmed `top_lev=0` bounds
+failure. MAM4xx PR #567 changed both factors to use the already clipped `km1`
+index.
 
 Away from cloud-base activation, `eddy_diff` comes from `eddy_diff_heat` after
 interpolation to interfaces and is bounded to `[0.01, 100] m2/s` in
@@ -233,8 +341,8 @@ sensitive to the diagnosed subgrid vertical velocity `wtke`.
 
 ## Fields Updated by ndrop Vertical Mixing
 
-With the default `enable_aero_vertical_mix = true`, the explicit mixing loop in
-`mam4::ndrop::update_from_explmix` updates three classes of state:
+At the current MAM4xx revision, the explicit mixing loop in
+`mam4::ndrop::update_from_explmix` always updates three classes of state:
 
 1. Cloud-droplet number mixing ratio, represented internally by `qcld` and
    returned to EAMxx as part of `nc_nuceat_tend`.
@@ -256,12 +364,17 @@ This is 25 aerosol constituents in each reservoir: four modal number fields and
 EAMxx field-name mapping is in
 `components/eamxx/src/physics/mam/mam_coupling.hpp`.
 
-## Turning Off Vertical Mixing with `enable_aero_vertical_mix`
+## Historical `enable_aero_vertical_mix=false` Behavior
 
-The default value is `true`. Although `false` is an accepted configuration,
-the current implementation does not consistently disable vertical mixing and
-does not preserve the aerosol state correctly. The disabled path is therefore
-a confirmed defect and should not be used in production.
+This section records behavior at MAM4xx revision
+`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. At that revision, the default
+value was `true`, but `false` was also accepted. The false path disabled only
+part of the update and did not preserve the aerosol state correctly.
+
+Current MAM4xx has removed this operational choice: the EAMxx argument remains
+for interface compatibility, but MAM4xx ignores its value and always performs
+the mixing update. The defect below therefore applies to older revisions, not
+to the current diagnostic branch.
 
 ### What happens in the explicit substep loop
 
@@ -278,7 +391,8 @@ cloud-droplet number:  dNc/dt includes the activated number source
 The decrease in `I` balances the increase in `C`, so activation transfers
 aerosol between the two forms rather than creating aerosol.
 
-Setting `enable_aero_vertical_mix=false` changes the loop as follows:
+At the evidence revision, setting `enable_aero_vertical_mix=false` changed the
+loop as follows:
 
 | Quantity | Behavior when the switch is `false` |
 |---|---|
@@ -301,24 +415,25 @@ The focused conservation test used complete cloud overlap, so this activation
 imbalance was demonstrated independently of any additional error caused by
 skipping the cloud-overlap return terms.
 
-The calculation of `nsubmix`, the substep loop, the aerosol-source calculations,
-and all 25 cloud-borne `explmix` updates still run. Setting the option to `false`
-therefore neither provides a correct physical state nor removes most of the
-adaptive loop structure for a performance experiment.
+The calculation of `nsubmix`, the substep loop, the aerosol-source
+calculations, and all 25 cloud-borne `explmix` updates still ran. Setting the
+option to `false` therefore neither provided a correct physical state nor
+removed most of the adaptive loop structure for a performance experiment.
 
 ### A separate work-array failure
 
-The subcycling code uses two work arrays for the old and new aerosol values,
-but `dropmixnuc` initializes only array zero from the EAMxx state. Subcycling
-starts with array zero as the old state and array one as the destination.
+The older subcycling path used two work arrays for the old and new aerosol
+values, but `dropmixnuc` initialized only array zero from the EAMxx state.
+Subcycling started with array zero as the old state and array one as the
+destination.
 
-With the switch off, the first substep writes new cloud-borne values into array
-one but does not write new interstitial values there. If `nsubmix=1`, the final
-interstitial tendencies are calculated from that unwritten destination. If
-there are additional substeps, array one becomes the old interstitial state
-used by the next activation-source calculations. Because neither destination
-array receives an interstitial substep update, later output can then use stale
-or unwritten values depending on the substep count. Thus the failure is not
+With the switch off, the first substep wrote new cloud-borne values into array
+one but did not write new interstitial values there. If `nsubmix=1`, the final
+interstitial tendencies were calculated from that unwritten destination. With
+additional substeps, array one became the old interstitial state used by the
+next activation-source calculations. Because neither destination array
+received an interstitial substep update, later output could use stale or
+unwritten values depending on the substep count. Thus the failure was not
 limited to even or odd substep counts.
 
 Focused tests separated this work-array problem from the uncancelled activation
@@ -332,9 +447,9 @@ source:
 - changing only the initial contents of the normally unwritten interstitial
   array changed the disabled result at every tested substep count.
 
-These results establish both an aerosol-conservation error and a dependence on
-an unwritten work array. Keep the switch at its default value, `true`, until the
-disabled path is corrected and tested. The executed evidence is documented in
+These results established both an aerosol-conservation error and a dependence
+on an unwritten work array at the evidence revision. The executed evidence is
+documented in
 [`eamxx_mam4xx_ndrop_defect_brief.md`](eamxx_mam4xx_ndrop_defect_brief.md).
 
 ### Changes made before and after the explicit vertical mixing loop
@@ -734,7 +849,7 @@ RK4 is not part of the current screening plan.
 
 ## Recommended Diagnostics
 
-### Existing diagnostics for the current five-day runs
+### Existing diagnostics for the current short runs
 
 | Priority | Diagnostic | Cadence or summary |
 |---|---|---|
@@ -761,18 +876,32 @@ calls or the limiting level.
 
 ### Highest-priority instrumentation
 
+A draft diagnostic-only change now exposes three per-column output fields:
+the exact count from the most recent ACI call, the sum of exact counts over the
+physics step, and the maximum count over the physics step. The count is the
+integer that controls the MAM4xx loop, not an offline reconstruction. The
+summaries are accumulated on the device without a per-call host transfer.
+The fields use the model's floating-point type in memory, while normal history
+files default to single precision. An always-active check preserves exact
+integer values in both places by limiting each count and the sum to
+`16,777,216` in every build. EAMxx initializes all three fields to zero; before
+the first ACI call, zero means "not yet calculated." These fields have not yet
+been tested in an EAMxx simulation or used in the benchmark.
+
 | Priority | Proposed measurement | Performance question answered |
 |---|---|---|
 | Essential | Fenced timer/profiling region around `MAMAci::call_function_dropmixnuc` | How much ACI time is in the wrapper plus `dropmixnuc`? |
-| Essential | Device-aggregated actual `nsubmix`: count, sum, maximum, mean, and histogram | Does runtime scale with explicit-loop trip count, and is a high-cost tail present? |
+| Essential, implemented in draft | `ndrop_nsubmix`, `ndrop_sum_nsubmix`, and `ndrop_max_nsubmix` | Does runtime scale with the actual explicit-loop count, and how large is the most expensive ACI call in each column? |
+| Essential follow-up | Count, mean, and histogram accumulated over columns and calls on the device | Is the mean hiding a small group of very expensive columns? |
 | Essential derived | `Wmix=sum(nsubmix*nactive)` and optionally `51*Wmix` | Does measured region time scale with expected explicit mixing work? |
 | Essential validity | Matched instrumentation-off/on timing | Do the counters and reductions perturb GPU performance? |
-| High value | `max_tinv`, empty-reduction flag, and limiting-level index | Why did `nsubmix` change, and is level zero incorrectly controlling it? |
+| High value | `max_tinv`, empty-reduction flag, and limiting-level index | Why did `nsubmix` change, and is a boundary level controlling it unexpectedly? |
 | High value, short segment | GPU occupancy, achieved bandwidth, kernel time, and source/program-counter samples | Are barriers, memory traffic, occupancy, or column imbalance limiting performance? |
 
 `dtmix` need not be stored for performance accounting because the final value
 is exactly `dt_aci/nsubmix`. Internal `wsub`, `wtke`, interface coefficients,
-limiter counts, and paired ledgers remain important second-stage physics and
+limiter counts, and mass/number conservation checks remain important
+second-stage physics and
 numerics diagnostics, but they are not required for first-order runtime
 attribution.
 
@@ -785,17 +914,21 @@ through `ATM_NCPL`, so case-specific timing should be verified from the case
 XML before making performance claims.
 
 No conclusion here should be interpreted as a validated performance profile.
-The immediate next step is the matched five-day `ne256` matrix using the
-existing timer/context contract above. A production-quality attribution still
-requires actual `nsubmix`, the scoped `dropmixnuc` timer, and preferably
-`max_tinv` with its limiting level. The level-zero boundary defect must be
-fixed, or an equivalent safe boundary demonstrated, before interpreting those
-adaptive-work measurements.
+The immediate implementation step is to complete EAMxx testing of the draft
+count fields and then collect them in matched short `ne256` cases. A
+production-quality attribution still requires a scoped `dropmixnuc` timer and
+preferably `max_tinv` with its limiting level. A histogram remains important
+for GPU work because a small number of columns with unusually many mixing
+steps can control elapsed time. The diagnostic branch includes the current
+level-zero index repair; its
+boundary behavior still needs to be exercised as part of supported-machine
+EAMxx testing.
 
 ## Revision History
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-17 | User / Codex | Added the initial six-hour `ne256` subcycle benchmark, separated measured timing from the fixed-plus-per-call working model, recorded the turbulence and cloud response, documented the ice-nucleation/P3 coupling constraint, described the draft exact-`nsubmix` output fields, and distinguished current MAM4xx repairs from the older defect revisions. |
 | 2026-08-06 | Codex | Recorded independent `PASS` decisions for the corrected standalone Forward Euler and IMEX gates and cleared the separately gated Backward Euler work to begin; no production or GPU claim was added. |
 | 2026-08-03 | Codex | Added the current FE, IMEX, Backward Euler, and hybrid comparison; clarified the frozen problem's linear structure, EKAT and external-library roles, matched-error requirement, GPU implications, and deferred higher-order candidates. |
 | 2026-07-21 | User / Codex | Corrected the disabled-mixing description to distinguish vertical transport from activation, cover aerosol number as well as mass, and explain the unwritten interstitial destination for every tested substep count. |

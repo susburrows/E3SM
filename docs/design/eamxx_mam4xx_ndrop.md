@@ -15,6 +15,16 @@ were additionally checked against upstream E3SM `master` revision
 `276942b7b4b504e3b4d59d3691f68df59300f8ae` and its MAM4xx gitlink
 `b154d7f23b2e910242abbbab5dc72250d7b950c5` on 2026-07-15.
 
+The diagnostic implementation was rebased on 2026-08-17 at E3SM commit
+`e2c578e40f`, based on upstream E3SM revision
+`fe750f50e98187afe02103349d8363acd7745a9a`. It uses MAM4xx commit
+`0d076d8ebb004a18f05f51f97b08edd9def6826f`, based on upstream MAM4xx revision
+`8fbf7750bafa8b14533d72397aeb027184d0ec37`, and EKAT revision
+`3a1485aecfed7a036e4fa30ce845498fd37975e2`. This newer MAM4xx revision always
+performs aerosol vertical mixing and no longer implements a disabled-mixing
+path. It also includes MAM4xx PR #567 (`0b100fb3d`), which replaces the unsafe
+`eddy_diff(k-1)` access at `top_lev=0` with the clipped `eddy_diff(km1)` index.
+
 ## Scope and Status
 
 This document covers the EAMxx call to MAM4xx `dropmixnuc`, with emphasis on:
@@ -29,6 +39,12 @@ This document covers the EAMxx call to MAM4xx `dropmixnuc`, with emphasis on:
 No production-physics modification is authorized by this document. The
 validation plan was approved before investigation-specific test code was
 written or executed.
+
+The user authorized a diagnostic-only pull request on 2026-08-11 to expose the
+actual explicit mixing-loop count. That authorization covers the three output
+fields described in the instrumentation section below and their tests. It does
+not authorize a change to the `ndrop` equations, loop bounds, activation,
+mixing, clipping, or model coupling.
 
 The proposed isolated Forward Euler, IMEX, and Backward Euler comparison below
 is a new numerical-method design that was **approved on 2026-07-23**. This
@@ -187,7 +203,7 @@ calls `mam4::ndrop::dropmixnuc` in a Kokkos team kernel.
 Within `dropmixnuc`, the relevant process order is:
 
 1. initialize work arrays and load interstitial and cloud-borne aerosol into
-   ping-pong buffer zero;
+   first of the two alternating work arrays;
 2. diagnose activation and transfer associated with new cloud;
 3. diagnose activation rates for existing cloud and cloud base;
 4. calculate a stable explicit mixing substep and repeat the explicit update;
@@ -305,9 +321,9 @@ previous one. Vertical levels are expressed as Fortran array operations and
 loops rather than EAMxx Kokkos team/vector ranges.
 
 Thus explicit mixing subcycling was inherited from Fortran; it was not
-introduced by the C++ port. Important port differences include the C++
-boundary representation, Kokkos execution structure, and the EAMxx
-`enable_aero_vertical_mix` option.
+introduced by the C++ port. At the older evidence revision, important port
+differences included the C++ boundary representation, Kokkos execution
+structure, and the EAMxx `enable_aero_vertical_mix` option described below.
 
 ### Vertical indexing and boundaries
 
@@ -319,13 +335,25 @@ kp1 = min(k + 1, pver - 1)
 km1 = max(k - 1, top_lev)
 ```
 
-The upper-interface mixing coefficient is currently formed as
+At the current diagnostic revision, the upper-interface mixing coefficient is
+formed as
+
+```text
+eddy_diff_km(k) = zn(k) * eddy_diff(km1) * csbot(km1) * zs(km1)
+```
+
+This is the repair from MAM4xx PR #567. In particular, `top_lev=0` no longer
+causes a `-1` access in this expression.
+
+#### Historical evidence-revision behavior
+
+The earlier evidence revision formed the coefficient as
 
 ```text
 eddy_diff_km(k) = zn(k) * eddy_diff(k - 1) * csbot(k - 1) * zs(km1)
 ```
 
-Consequences of the as-built indexing are:
+Consequences at that revision were:
 
 - when `top_lev=0`, the first active iteration reads `eddy_diff(-1)` and
   `csbot(-1)`;
@@ -339,14 +367,24 @@ Consequences of the as-built indexing are:
 The legacy Fortran implementation uses one-based active levels and declares
 the interface array with an additional zero boundary index. It explicitly sets
 the interface above the top active level to zero before evaluating the same
-form of mixing rate. The corresponding C++ boundary initialization or guard is
-not evident in the inspected call path.
+form of mixing rate. The corresponding C++ boundary initialization was not
+evident in the older call path. The executed evidence for this repaired defect
+remains documented below so results from affected revisions stay reproducible.
 
 ### `enable_aero_vertical_mix` behavior
 
-Inside the explicit substep loop, the switch controls these operations:
+At the current diagnostic revision, EAMxx still passes this Boolean argument
+for interface compatibility, but MAM4xx does not use its value. The explicit
+mixing loop always updates droplet number, interstitial aerosol, and
+cloud-borne aerosol. Current results therefore cannot be described as an
+enabled-versus-disabled comparison.
 
-| Update | Switch condition in current code |
+#### Historical evidence-revision behavior
+
+At MAM4xx revision `1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`, the switch
+controlled these operations:
+
+| Update | Switch condition at the evidence revision |
 |---|---|
 | Mix/update cloud-droplet number `qcld` | Conditional |
 | Mix/update interstitial aerosol number | Conditional |
@@ -357,19 +395,19 @@ Inside the explicit substep loop, the switch controls these operations:
 
 The activation source has opposite signs in the interstitial and cloud-borne
 equations. Consequently, disabling only the interstitial update while retaining
-the cloud-borne update does not preserve the paired source cancellation in the
-equations actually advanced.
+the cloud-borne update does not preserve cancellation between the matching
+interstitial loss and cloud-borne gain in the equations actually advanced.
 
-The aerosol arrays use two time buffers. At entry, only buffer zero is loaded
-from the EAMxx state. The source and destination buffer indices swap after each
-substep. When aerosol vertical mixing is disabled, the interstitial destination
-buffer is not written by the conditional `explmix` calls, but subsequent
-substeps and final tendency construction can read the swapped buffer. Existing
-validation fixtures initialize both buffers, which does not reproduce this
-production initialization pattern.
+The aerosol arrays used two time buffers. At entry, only buffer zero was loaded
+from the EAMxx state. The source and destination indices swapped after each
+substep. When aerosol vertical mixing was disabled, the interstitial
+destination array was not written by the conditional `explmix` calls, but
+subsequent substeps and final tendency construction could read the swapped
+array. Validation fixtures at that revision initialized both arrays, which did
+not reproduce the production initialization pattern.
 
-Cloud-fraction-driven same-level repartitioning occurs outside the
-switch-guarded explicit calls. This is not vertical transport. For each paired
+Cloud-fraction-driven same-level repartitioning occurred outside the explicit
+calls disabled by the switch. This is not vertical transport. For each paired
 interstitial/cloud-borne constituent `(I,C)` at one model level:
 
 - when cloud fraction grows by more than `0.01`, activation computes a positive
@@ -379,15 +417,15 @@ interstitial/cloud-borne constituent `(I,C)` at one model level:
 - when cloud is absent, the code applies `I <- I+C`, `C <- 0` and removes the
   corresponding cloud-droplet number.
 
-Before positivity clipping or the disabled-buffer defect, these local paired
-operations preserve `I+C`. They remain active when
-`enable_aero_vertical_mix=false` because the switch guards selected explicit
+Before positivity clipping or the disabled-array defect, these local paired
+operations preserved `I+C`. They remained active when
+`enable_aero_vertical_mix=false` because the switch disabled selected explicit
 neighbor-mixing updates, not all activation and cloud-phase repartitioning in
 `dropmixnuc`. Retaining conservative local repartitioning while disabling
-turbulent transport is physically coherent; the confirmed defect is that the
-substep loop retains the cloud-borne `+S` update while suppressing its paired
-interstitial `-S` and droplet-number updates and can read an unwritten ping-pong
-buffer.
+turbulent transport is physically coherent; the confirmed historical defect
+was that the substep loop retained the cloud-borne `+S` update while
+suppressing the corresponding interstitial `-S` and droplet-number updates and
+could read an unwritten alternating work array.
 
 ### Comparison with Fortran EAMv3
 
@@ -428,15 +466,25 @@ The primary locations are:
 - `components/eamxx/src/physics/mam/eamxx_mam_aci_functions.hpp`
 - `externals/mam4xx/src/mam4xx/ndrop.hpp`
 
-The current `dropmixnuc` signature is declared in
-`externals/mam4xx/src/mam4xx/ndrop.hpp:1438-1477`. The EAMxx wrapper signature
-is in
-`components/eamxx/src/physics/mam/eamxx_mam_aci_functions.hpp:199-231`.
+At the current diagnostic revision, the `dropmixnuc` signature begins near
+`externals/mam4xx/src/mam4xx/ndrop.hpp:1279`, and the EAMxx wrapper signature
+begins near
+`components/eamxx/src/physics/mam/eamxx_mam_aci_functions.hpp:230`.
 
 ### Source evidence map
 
-The following anchors apply to the inspected revisions and are intended to make
-the investigation reproducible:
+The current diagnostic path is anchored by function name as follows:
+
+| Current evidence | Function or location |
+|---|---|
+| Repaired `km1` indexing, timestep selection, and explicit loop | `mam4::ndrop::update_from_explmix` in `externals/mam4xx/src/mam4xx/ndrop.hpp` |
+| Compatibility Boolean accepted but unused | `mam4::ndrop::dropmixnuc` signature in the same file |
+| Exact `nsubmix` returned to EAMxx | `MAMAci::call_function_dropmixnuc` in `components/eamxx/src/physics/mam/eamxx_mam_aci_functions.hpp` |
+| Exact-count output fields and precision bounds | `MAMAci::create_requests`, `MAMAci::initialize_impl`, and `detail::accumulate_ndrop_nsubmix` in the EAMxx MAM ACI interface and functions files |
+
+The detailed line anchors below apply to the older evidence revisions. They
+are retained to make the executed defect investigation reproducible and should
+not be used as current-main source locations:
 
 | Evidence | File and lines |
 |---|---|
@@ -453,7 +501,7 @@ the investigation reproducible:
 | Interstitial tendency application | `components/eamxx/src/physics/mam/eamxx_mam_aci_functions.hpp:458-500` |
 | Explicit update equations and positivity limiter | `externals/mam4xx/src/mam4xx/ndrop.hpp:1092-1164` |
 | Derived boundary indices and `k-1` reads | `externals/mam4xx/src/mam4xx/ndrop.hpp:1219-1240` |
-| Explicit-step selection and ping-pong swap | `externals/mam4xx/src/mam4xx/ndrop.hpp:1264-1299` |
+| Explicit-step selection and alternating-array swap | `externals/mam4xx/src/mam4xx/ndrop.hpp:1264-1299` |
 | Conditional droplet and interstitial updates; unconditional cloud-borne updates | `externals/mam4xx/src/mam4xx/ndrop.hpp:1321-1408` |
 | Unconditional no-cloud resuspension | `externals/mam4xx/src/mam4xx/ndrop.hpp:1415-1435` |
 | Boundary-array initialization and buffer-zero state load | `externals/mam4xx/src/mam4xx/ndrop.hpp:1544-1607` |
@@ -475,7 +523,7 @@ the investigation reproducible:
 | Input | Role | Units | Dimensions | Valid range/current contract |
 |---|---|---:|---|---|
 | `top_level_mam4xx` / `top_lev` | First active vertical level | index | scalar | Zero-based in C++; no enforced range |
-| `enable_aero_vertical_mix` | Controls selected explicit updates | boolean | scalar | Default `true`; precise disabled-state semantics undocumented |
+| `enable_aero_vertical_mix` | Retained EAMxx compatibility input | boolean | scalar | Current MAM4xx ignores the value and always performs mixing; older revisions used the defective partial-disable behavior documented above |
 | `dt` / `dtmicro` | Interval advanced by one `dropmixnuc` call | s | scalar | Positive and finite assumed; not checked locally |
 | `temp` | Midlevel temperature | K | `pver` | Positive and finite assumed |
 | `pmid`, `pint` | Midlevel and interface pressure | Pa | `pver`, host interface extent | Positive, monotone atmospheric profile assumed |
@@ -500,9 +548,9 @@ does not validate their values.
 
 | Quantity | Entry representation | Local evolution | EAMxx application |
 |---|---|---|---|
-| Interstitial aerosol number/mass | `progs.q_aero_i` | Paired transfer and optional explicit mixing in `raercol` | Returned change divided by `dt`, then applied as a tendency |
-| Cloud-borne aerosol number/mass | `progs.q_aero_c` | Paired transfer and unconditional explicit cloud-borne update in `raercol_cw` | Returned as a replacement state after heterogeneous freezing |
-| Cloud-droplet number | `qcld` work field | Activation source and optional explicit mixing | Returned through the ACI process output path |
+| Interstitial aerosol number/mass | `progs.q_aero_i` | Paired transfer and explicit mixing in `raercol` | Returned change divided by `dt`, then applied as a tendency |
+| Cloud-borne aerosol number/mass | `progs.q_aero_c` | Paired transfer and explicit mixing in `raercol_cw` | Returned as a replacement state after heterogeneous freezing |
+| Cloud-droplet number | `qcld` work field | Activation source and explicit mixing | Returned through the ACI process output path |
 | Activation rates | Temporary `nact`/`mact` | Diagnosed and limited before explicit substeps | Diagnostic/work data, not a separate aerosol state |
 
 The 25 aerosol pairs comprise:
@@ -530,7 +578,7 @@ The remaining outputs and internal work fields are:
 | `wtke` | Activation velocity after the local lower bound | m s-1 | `pver` diagnostic/work field |
 | `ccn` | CCN concentrations at prescribed supersaturations | # m-3 | `pver x supersaturation bins` |
 | `coltend`, `coltend_cw` | Pressure-weighted interstitial/cloud-borne column tendency contributions | # m-2 s-1 or kg m-2 s-1 | `25 x pver` diagnostics |
-| `raercol`, `raercol_cw` | Interstitial/cloud-borne ping-pong state | # kg-1 or kg kg-1 | `pver x 2 x 25` |
+| `raercol`, `raercol_cw` | Two alternating interstitial/cloud-borne work states | # kg-1 or kg kg-1 | `pver x 2 x 25` |
 | `nact`, `mact` | Modal number/mass activation rates | s-1 | `pver x modes` |
 | `eddy_diff`, `zn`, `csbot`, `zs`, `eddy_diff_kp`, `eddy_diff_km` | Geometry and explicit mixing coefficients | mixed; final coefficients s-1 | `pver` work fields |
 | `overlapp`, `overlapm` | Cloud overlap below/above | 1 | `pver`, expected `[0,1]` |
@@ -564,15 +612,18 @@ evidence; final classifications remain in the validation section.
 
 ### Disabled-mixing state
 
-`enable_aero_vertical_mix=false` is accepted by the EAMxx parameter interface
-and is reachable through configuration. No current default using `false` has
-been identified. A deterministic standalone test can exercise the state. The
-namelist description says that the switch disables vertical mixing of
-interstitial aerosol and liquid number during activation, which is consistent
-with some conditional calls but does not specify the required behavior of the
-cloud-borne pair, paired activation sources, or ping-pong buffers.
+`enable_aero_vertical_mix=false` is still accepted by the EAMxx parameter
+interface and is reachable through configuration. At the current MAM4xx
+revision, however, the argument is unused and both Boolean values execute the
+same always-mixing path. The deterministic enabled/disabled comparison below
+applies only to the older evidence revision, where `false` reached the
+defective partial-disable path.
 
-### Executed boundary evidence
+### Historical executed boundary evidence
+
+The current diagnostic branch contains the PR #567 index repair. The results
+in this subsection deliberately reproduce the older, affected revision and are
+not current-main test results.
 
 On 2026-07-14, an external 128-level evidence driver compiled the inspected
 `update_from_explmix` header without modifying MAM4xx production source. It used
@@ -633,6 +684,11 @@ negative-index expression is exercised by default L128 MAM4xx ACI runs; it is
 not exercised by every EAMxx configuration, such as L72 with `top_lev=6` or a
 configuration without MAM4xx ACI.
 
+This paragraph describes the older evidence revision. Current MAM4xx main
+contains PR #567 (`0b100fb3d`), which uses the already clipped `km1` index for
+all factors in `eddy_diff_km`. The diagnostic branch described above includes
+that repair and does not execute this negative-index expression.
+
 #### Propagation and anticipated impacts
 
 The out-of-bounds values are read only while constructing
@@ -666,9 +722,10 @@ dependence on memory allocation, column ordering, backend, and execution
 timing. These are anticipated propagation modes from the equations and memory
 layout; their production frequency and magnitude have not yet been measured.
 
-### Executed disabled-mixing evidence
+### Historical executed disabled-mixing evidence
 
-The same instrumented 128-level driver exercised the exact
+Current MAM4xx has removed the operational disabled path. The same instrumented
+128-level driver exercised the exact older
 `update_from_explmix` implementation at `top_lev=1`, isolating switch behavior
 from the separately confirmed `top_lev=0` defect. The controlled column used:
 
@@ -705,7 +762,7 @@ count. Disabled state fingerprints changed substantially at all three substep
 counts; for `nsubmix=1` they ranged from `30656.8` to `386305.3`, and for
 `nsubmix=3` from `41992.4` to `437920.0`. This establishes a separate
 unwritten-buffer dependency. The scale-one primary matrix is sufficient to
-establish the paired-ledger violation without relying on poisoned or
+establish the mass/number conservation violation without relying on poisoned or
 uninitialized data.
 
 ## Verification and Validation Plan
@@ -743,9 +800,12 @@ Acceptance criteria are zero bounds violations, zero use of poisoned boundary
 data, exact active-level coverage, and deterministic rejection of inputs
 outside the approved range.
 
-### Disabled vertical-mixing matrix
+### Historical disabled vertical-mixing matrix
 
-Use deterministic, nonzero interstitial and cloud-borne number and mass fields.
+This matrix is expected-failure evidence for the older defective revision; it
+is not a successful validation case and does not apply to current MAM4xx, where
+the Boolean argument is unused. Use deterministic, nonzero interstitial and
+cloud-borne number and mass fields.
 Choose cloud fractions and activation rates that exercise paired transfers but
 avoid positivity clipping in the principal conservation case. Compare enabled
 and disabled runs while varying the mixing-rate profile enough to force one,
@@ -769,9 +829,10 @@ Check:
 - paired-field source cancellation;
 - nonnegativity and finite values;
 - whether one member changes while its paired member does not;
-- independence from initial contents of the destination ping-pong buffer;
+- independence from initial contents of the destination work array;
 - consistency across even and odd `nsubmix`; and
-- agreement with the reviewed meaning of `enable_aero_vertical_mix=false`.
+- agreement with the historical test definition of
+  `enable_aero_vertical_mix=false`.
 
 For a controlled no-clipping case, require
 
@@ -790,10 +851,11 @@ any non-conservation introduced by positivity clipping.
 
 A synthetic kernel test can establish an interface hazard or an executed
 bounds/ledger violation, but production reachability must be established
-separately. For `top_lev=0`, retain the source trace from the default L128
-namelist through `MAMAci::run_impl` into `dropmixnuc`. For the disabled switch,
-retain a source trace showing that a legal EAMxx parameter list can supply
-`false`; explicitly distinguish this from a default production configuration.
+separately. For the older `top_lev=0` defect, retain the source trace from the
+default L128 namelist through `MAMAci::run_impl` into `dropmixnuc`. For the
+historical disabled switch, retain a source trace showing that a legal EAMxx
+parameter list could supply `false`; explicitly distinguish this from current
+MAM4xx, where that value no longer changes the executed path.
 
 ### Classification rule
 
@@ -1211,13 +1273,16 @@ reject another method on accuracy or performance grounds.
 
 ### Known defects and excluded cases
 
-**The known `top_lev=0` and disabled-vertical-mixing defect paths are excluded
-from successful numerical validation.**
+**The older `top_lev=0` bounds failure and partial disabled-mixing path are
+excluded from successful numerical validation.**
 
-The production-reachable `top_lev=0` invalid boundary access and the defective
-`enable_aero_vertical_mix=false` path are known defects, not successful
-validation cases. Tests may reproduce them as expected-failure evidence, but
-excluded paths must never be counted as passing numerical validation.
+At the evidence revisions, the production-reachable `top_lev=0` invalid
+boundary access and the defective `enable_aero_vertical_mix=false` path were
+known defects, not successful validation cases. Tests may reproduce them as
+expected-failure evidence, but excluded paths must never be counted as passing
+numerical validation. Current MAM4xx contains the PR #567 index repair and has
+removed the operational partial-disable path; current validation must exercise
+those repaired semantics.
 
 These cases and their classifications are documented in
 [`docs/analysis/eamxx_mam4xx_ndrop_defect_brief.md`](../analysis/eamxx_mam4xx_ndrop_defect_brief.md).
@@ -1451,8 +1516,8 @@ and later profiling on a representative GPU.
 |---|---|---|---|
 | Numerical-method design | Approved by the user on 2026-07-23 | Follow the staged review gates below | Resolved for standalone prototype code |
 | Bottom mass source | MAM4xx physics-owner decision on C++ versus intended formulation | Current C++ primary; note as active TODO | Production adoption only |
-| `top_lev=0` defect | Fix and bounds/ledger regression evidence | Explicit safe boundaries; exact-function comparison at `top_lev=1` | Production integration, not isolated study |
-| Disabled-mixing defect | Fix and paired-ledger regression evidence | Keep `enable_aero_vertical_mix=true` | Disabled-mode and production integration |
+| Historical `top_lev=0` defect | Current PR #567 repair plus bounds and conservation regression evidence | Use the repaired `km1` expression | Supported-machine production integration |
+| Historical disabled-mixing defect | Confirm current MAM4xx always-mixing behavior | Use current MAM4xx, where the partial-disable path was removed | Historical affected revisions only |
 | Downstream fixer behavior | Trace whether EAMxx later masks or redistributes Forward Euler clipping errors | Report standalone Forward Euler raw and clipped ledgers with no fixer | Coupled scientific interpretation only |
 | GPU implementation | Production-representative backend, solver, compiler, precision, and GPU | Defer until local screening supports it | GPU performance conclusion |
 | Runtime distributions | Sampled coefficients and `nsubmix` from EAMxx | Synthetic typical/strong profiles | Production representativeness |
@@ -1512,9 +1577,9 @@ The principal alternatives and their present status are:
 
 | Method | Main advantage | Main disadvantage or risk | GPU work pattern | Current status |
 |---|---|---|---|---|
-| Current subcycled Forward Euler | Exact production behavior; very low overhead when `nsubmix` is one; repeated short steps can resolve the frozen operator accurately | Stability requires many sequential vertical passes in strong mixing; work varies by column; clipping can alter aerosol ledgers | Many fields can run in parallel, but levels and substeps are sequential and high-`nsubmix` columns create a long tail | Standalone automated remediation suite passes; independent gate re-review remains required |
-| IMEX-Euler | Removes the explicit mixing stability restriction; uses two shared scalar tridiagonal matrix families with many right-hand sides; fixed work per call | Explicit activation is lagged over the ACI interval; raw positivity can fail; solve overhead can exceed FE for `nsubmix` of one or two; first-order | EKAT cyclic reduction can expose parallelism within each column and across fields/columns | Standalone automated remediation suite passes; independent gate re-review remains required; no GPU implementation or timing |
-| Fully implicit Backward Euler | Removes the mixing restriction and evaluates activation transfer at the new state; likely more robust when explicit-source lag matters | Requires custom 2-by-2 block-tridiagonal solves; more flops and workspace; first-order stiff damping can reduce accuracy; positivity is not guaranteed | Fixed work, but the coupled block solver is not supplied by the current EKAT scalar interface | Designed but blocked until FE and IMEX pass independent re-review; not implemented |
+| Current subcycled Forward Euler | Exact production behavior; very low overhead when `nsubmix` is one; repeated short steps can resolve the frozen operator accurately | Stability requires many sequential vertical passes in strong mixing; work varies by column; clipping can alter aerosol ledgers | Many fields can run in parallel, but levels and substeps are sequential and high-`nsubmix` columns create a long tail | Standalone gate passed independent review at the tested boundaries; no new production or GPU timing |
+| IMEX-Euler | Removes the explicit mixing stability restriction; uses two shared scalar tridiagonal matrix families with many right-hand sides; fixed work per call | Explicit activation is lagged over the ACI interval; raw positivity can fail; solve overhead can exceed FE for `nsubmix` of one or two; first-order | EKAT cyclic reduction can expose parallelism within each column and across fields/columns | Standalone gate passed independent review; no production implementation or GPU timing |
+| Fully implicit Backward Euler | Removes the mixing restriction and evaluates activation transfer at the new state; likely more robust when explicit-source lag matters | Requires custom 2-by-2 block-tridiagonal solves; more flops and workspace; first-order stiff damping can reduce accuracy; positivity is not guaranteed | Fixed work, but the coupled block solver is not supplied by the current EKAT scalar interface | Initial design gate approved; standalone implementation and validation remain separate work |
 | Hybrid FE/IMEX | Retains the cheap FE path for low-`nsubmix` columns and targets IMEX at the expensive tail | Requires classification/batching or compaction, a threshold policy, two maintained paths, and validation at the switch boundary | Potentially best production GPU balance if high-`nsubmix` columns can be batched efficiently | Provisional concept only; requires profiling and a separate design gate |
 
 The provisional GPU ranking is hybrid FE/IMEX if high-`nsubmix` columns can be
@@ -1625,9 +1690,12 @@ fields are registered with volume rather than inverse-volume units despite
 concentration comments in the implementation. These metadata problems must be
 documented or corrected before quantitative use.
 
-No currently registered field exposes actual `nsubmix`, `max_tinv`, `dtmix`,
-the limiting level, ACI-local `wsub`/`wtke`, inner-loop limiter activity, or a
-timer scoped specifically to `dropmixnuc`.
+At the baseline revisions, no registered field exposes actual `nsubmix`,
+`max_tinv`, `dtmix`, the limiting level, ACI-local `wsub`/`wtke`, inner-loop
+limiter activity, or a timer scoped specifically to `dropmixnuc`. The draft
+diagnostic change now adds the actual count, its sum over a physics step, and
+its maximum over a physics step. Those fields have not yet been collected in
+an EAMxx simulation. The other quantities in this list remain unavailable.
 
 #### Comprehensive existing-output recommendation for activation attribution
 
@@ -1688,7 +1756,7 @@ output.
 | Mode-resolved `fluxn`, `fluxm`, and `flux_fullact` | Explain conversion of activated fractions into number and mass fluxes | Local variables only |
 | `cloud_frac_used_by_ndrop` and `delta_cloud_frac` | Expose the cloud-water gate and the `0.01` cloud-growth thresholds actually traversed | Reconstructable, but not directly output |
 | Explicit pre-ACI aerosol number, mass, and cloud-borne copies | Ensure comparison uses the state consumed by activation rather than a post-ACI state | Not implemented |
-| Actual `nsubmix`, `max_tinv`, `dtmix`, and limiting level | Separate activation behavior from adaptive explicit-mixing work and timestep sensitivity | Internal only |
+| Actual `nsubmix`, `max_tinv`, `dtmix`, and limiting level | Separate activation behavior from adaptive explicit-mixing work and timestep sensitivity | Draft fields expose actual `nsubmix`, its physics-step sum, and its physics-step maximum; the remaining quantities are internal only. |
 
 Until these quantities are instrumented, an every-step existing-field stream
 supports correlation and reconstruction but not definitive causal attribution.
@@ -1759,11 +1827,46 @@ conservation analysis.
 
 ### Diagnostics requiring code instrumentation
 
-The following quantities are not currently available as EAMxx output fields or
-appropriately scoped timers. Production instrumentation remains subject to a
-separate design approval. GPU implementations should use device-resident
-accumulators and infrequent output; per-call host copies or MPI reductions
-would perturb the measurement.
+The draft pull request implements the smallest useful part of this section:
+the exact `nsubmix` count and two physics-step summaries. The user approved
+that diagnostic-only work on 2026-08-11. The additional fields and timers in
+the tables below remain proposals and require their own implementation review.
+GPU implementations should accumulate values on the device and write them
+infrequently; copying every call to the host or adding an MPI reduction would
+perturb the measurement.
+
+#### Implemented in the draft diagnostic pull request
+
+| Output field | Meaning |
+|---|---|
+| `ndrop_nsubmix` | Exact number of explicit mixing iterations used by the most recent MAM4xx ACI call in each column. |
+| `ndrop_sum_nsubmix` | Sum of the exact counts over all MAM4xx ACI calls in the enclosing physics step, for each column. |
+| `ndrop_max_nsubmix` | Largest exact count among those calls, for each column. |
+
+MAM4xx returns the same integer that controls the production loop; EAMxx does
+not reconstruct the value from saved inputs. EAMxx updates the three fields on
+the device inside the existing column kernel. On the first MAM4xx ACI call of a
+physics step, that same kernel starts a new sum and maximum; no separate reset
+kernel is launched. The summaries remain available after the final call. No
+per-call host copy or MPI reduction is added. The fields use the model's `Real`
+type in memory, while normal history files default to single precision. To
+preserve exact integer values in both places, an always-active device check
+limits each count and the accumulated sum to `16,777,216` (`2^24`) in every
+build. The unit test exercises the limit and rejection beyond it. EAMxx
+initializes all three fields to zero. Before the first ACI call, zero means
+"not yet calculated," not an executed zero-iteration loop.
+
+The rebased MAM4xx diagnostic commit passed its focused `ndrop` unit test and
+the complete 80-test `ndrop` comparison suite. Two existing maximum-
+supersaturation comparisons were reported as skipped by their configured
+tolerance rule; there were no numerical failures. The comparison scripts
+require NumPy. One attempted rerun selected the system Python without NumPy
+and stopped during test startup; the corrected rerun used the existing bundled
+Python environment and passed. The EAMxx wrapper change has not been compiled
+locally because this Mac is not a supported EAMxx test machine. Before merge,
+EAMxx CI or a supported machine must exercise the device write, field output,
+and reset behavior across multiple local and enclosing process-group subcycles
+and across two physics steps. The same path must run on a GPU backend.
 
 #### Minimum performance and adaptive-work set
 
@@ -1844,22 +1947,25 @@ case should use identical hourly `instant` output for `eddy_diff_heat`,
 summaries. Separate extended runs, every-step companion output, focused
 inner-call windows, and full-run profiling are deferred.
 
-If production instrumentation is later approved, reduced device-accumulated
-`nsubmix` and work histograms can be written hourly in the same five-day
-matrix. A short warmed-up profiler segment or matched instrumentation-off/on
-segment remains the recommended follow-up for quantifying kernel behavior and
-diagnostic overhead, but it is not part of the current run matrix.
+After the draft count fields pass EAMxx testing, their per-column sum and
+maximum can be sampled with hourly `instant` output in the same five-day
+matrix. Each hourly record represents the completed physics step at the output
+time; it does not accumulate counts over the preceding hour. Histograms and
+work counters are still unimplemented. A short warmed-up profiler segment or
+matched instrumentation-off/on segment remains the recommended follow-up for
+quantifying kernel behavior and diagnostic overhead, but it is not part of the
+current run matrix.
 
 ### Validity gates for the planned runs
 
-- The current L128 `top_lev=0` boundary-index defect can directly corrupt
-  `eddy_diff_km`, `max_tinv`, and `nsubmix`. The defect must be corrected, or a
-  demonstrably equivalent safe boundary must be used, before interpreting
-  `ndrop` scaling from these experiments.
+- Use a MAM4xx revision containing PR #567 and verify the `top_lev=0` boundary
+  test before interpreting `ndrop` scaling. The diagnostic branch satisfies
+  the revision requirement; supported-machine EAMxx testing remains pending.
 - Record actual `nsubmix`. The inspected Kokkos reduction overwrites the
   preassigned `dtmicro` value, so weak mixing can produce one explicit substep.
-- Keep `enable_aero_vertical_mix` fixed and true unless the separately confirmed
-  disabled-switch defect has been corrected and tested.
+- Do not use the older `enable_aero_vertical_mix=false` path as a validation
+  case. Current MAM4xx has removed that operational switch and always performs
+  the mixing update.
 - Keep output fields, cadence, remapping, compression, MPI/GPU layout, and
   profiler settings identical within each timing comparison.
 - Exclude initialization and profiler warm-up from steady-state timing, and use
@@ -1872,17 +1978,17 @@ diagnostic overhead, but it is not part of the current run matrix.
   redesigned configuration.
 - The intended top-interface boundary condition must be stated explicitly.
   The legacy implementation indicates zero flux, but the C++ contract does not.
-- The approved investigation contract interprets
-  `enable_aero_vertical_mix=false` as disabling turbulent transport while
-  retaining conservative paired activation and cloud/interstitial phase
-  transfers. Production naming and namelist documentation should be clarified
-  when the defect is fixed.
+- The earlier investigation interpreted `enable_aero_vertical_mix=false` as
+  disabling turbulent transport while retaining conservative activation and
+  cloud/interstitial phase transfers. Current MAM4xx instead ignores the
+  compatibility argument and always performs mixing. EAMxx namelist text
+  should be updated so users are not offered a setting that has no effect.
 - GPU bounds behavior may differ from a bounds-checked host build. Host
   sanitizer evidence should be paired with deterministic invariant tests that
   are portable to GPU builds.
-- Existing MAM4xx validation initializes both ping-pong buffers and therefore
-  cannot by itself establish the safety of production initialization when the
-  switch is false.
+- Validation at the older evidence revision initialized both alternating work
+  arrays and therefore cannot by itself establish the safety of that historical
+  partial-disable path.
 - The existing tests do not span the boundary matrix or verify paired aerosol
   ledgers.
 - The `Kokkos::Min` reducer overwrites, rather than incorporates, the
@@ -1914,6 +2020,7 @@ diagnostic overhead, but it is not part of the current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-17 | User / Codex | Documented the approved diagnostic-only implementation of the exact `nsubmix` count, per-physics-step sum, and per-physics-step maximum; rebased it onto current E3SM and MAM4xx; distinguished the repaired current paths from the two older defects; and kept all operator equations unchanged. |
 | 2026-08-06 | Independent reviewer / Codex | Recorded strict independent `PASS` decisions for the corrected Forward Euler and IMEX gates at candidate `2c4427e` after fresh sanitizer/debug and optimized reruns, oracle-sensitivity mutations, and independent clipping and fractional-overlap hand checks. The Backward Euler gate may proceed. |
 | 2026-08-06 | Codex | Remediated the second independent FE/IMEX gate review with mode-sensitive independent activation oracles, complete exact clipping diagnostics, an IMEX limiter-active direct oracle, focused finite-stage failure probes, a reproducible CMake/CTest driver, and fresh sanitizer/debug plus optimized evidence. Both gates remain pending independent review. |
 | 2026-08-03 | Codex | Clarified that the frozen isolated operator is linear; documented the sequential scalar-tridiagonal IMEX structure, the block-tridiagonal Backward Euler structure, the EKAT versus integration-library boundary, current FE/IMEX/BE/hybrid trade-offs, and deferred higher-order implicit candidates. No production implementation was authorized. |
@@ -1935,7 +2042,7 @@ diagnostic overhead, but it is not part of the current run matrix.
 | 2026-07-15 | Codex | Added and prioritized the GPU-aware diagnostics contract, reduced existing diagnostics to a performance-only subset with required `eddy_diff_heat`/`w_variance` context, and documented how the `top_lev=0` invalid access can be masked and propagate; no production instrumentation was implemented. |
 | 2026-07-14 | Codex | Corrected the accumulation/Aitken mode labels during the second peer-review pass; the constituent counts and executed test mapping already followed the source `{7, 4, 7, 3}` order. |
 | 2026-07-14 | User / Codex | Recorded explicit approval of the reconstructed design, corrected Kokkos subcycling contract, and focused validation plan. |
-| 2026-07-14 | Codex | Recorded the executed one/even/odd disabled-mixing matrix, paired-ledger and destination-buffer violations, and final confirmed-defect classification. |
+| 2026-07-14 | Codex | Recorded the executed one/even/odd disabled-mixing matrix, mass/number conservation and destination-array violations, and final confirmed-defect classification. |
 | 2026-07-14 | Codex | Recorded Kokkos-bounds-checked 128-level boundary evidence and classified the production-reachable `top_lev=0` access as a confirmed defect; retained disabled mixing as a code-reading risk pending ledger tests. |
 | 2026-07-14 | Codex | Corrected the as-executed subcycle selection after instrumented boundary work exposed that the Kokkos minimum reducer overwrites the preassigned `dtmicro` cap; expanded validation to one, even, and odd substep counts. |
 | 2026-07-14 | Codex | Reconstructed the existing EAMxx-MAM4xx `ndrop` indexing, subcycling, paired-field updates, coupling, and validation requirements from source; marked for review before investigation-specific tests. |
