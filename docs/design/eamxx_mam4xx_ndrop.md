@@ -899,11 +899,262 @@ CPU timing and operation-count estimates. This phase will not claim GPU or
 whole-model performance. GPU implementation and profiling are deferred until
 the local results justify that work.
 
-The study baseline is E3SM revision
+The original study baseline was E3SM revision
 `e12e7d61dba924717e8f35fe8288247c1766ee30` with MAM4xx revision
-`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. Generated builds and results must
-use a short unsynchronized path under `/private/tmp`; no build or run tree may
-be created in the OneDrive source tree.
+`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. That stack and its later
+remediation evidence remain historical. The current locked stack and expanded
+screening contract are defined below. Generated dependency checkouts, builds,
+and results must use a short unsynchronized path under `/private/tmp`; no build
+or run tree may be created in the OneDrive source tree.
+
+### Cross-method screening execution contract
+
+> **[CURRENT CROSS-METHOD SCREENING AMENDMENT - APPROVED 2026-08-18]**
+
+This amendment authorizes only standalone test, validation, analysis, and
+local CPU timing code. It does not authorize a change to production EAMxx or
+MAM4xx equations, interfaces, gitlinks, or runtime behavior. Forward Euler
+(FE), IMEX Euler, and Backward Euler (BE) receive independent numerical gates;
+a method that fails its gate is retained as evidence but excluded from timing
+and cross-method conclusions.
+
+The current comparison stack is locked to these exact revisions:
+
+| Repository | Current screening revision |
+|---|---|
+| E3SM source baseline | `e2c578e40f6602a108eff577091de86a453624ab` |
+| MAM4xx | `0d076d8ebb004a18f05f51f97b08edd9def6826f` |
+| EKAT | `3a1485aecfed7a036e4fa30ce845498fd37975e2` |
+| Kokkos | `23745d8494203711a6090d0a201c3ae3bf57853b` |
+
+The archived 2026-08-06 gate stack remains E3SM
+`3f8d0812602730b7bcca2b02e5a4ecae42fd62d8`, MAM4xx
+`1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`, EKAT
+`65cda3ff61abe22add622b56cee6234e29fc51c4`, Kokkos
+`6a19eb9454da490dbf785443d8f021028baeb161`, and Haero
+`8f9b61aed4252461d76eb7c206927e4a005930f5`. It is historical evidence, not a
+substitute for the current gate. The checked-in `dependency_lock.json` is the
+machine-readable authority for both stacks. The preparation script must fail
+closed on any missing commit, gitlink mismatch, attached HEAD, or dirty
+dependency checkout and must record the source worktree separately from the
+clean detached dependency checkouts.
+
+#### First-active-level controller versus physical boundary
+
+Let `t` be the first active level. The physical operator has zero flux through
+the top interface and therefore uses
+
+\[
+E_t=0,\qquad D_t^{\uparrow}=0
+\]
+
+in FE tendencies and every IMEX or BE matrix. Current repaired MAM4xx may also
+form
+
+\[
+D_{top,controller}(t)=
+z_n(t)\,eddy\_diff(t)\,csbot(t)\,z_s(t)
+\]
+
+for the FE stability reduction at the first active level. This is a timestep
+controller, not a physical exchange coefficient. It may increase `nsubmix`
+but must never enter a tendency, ledger, IMEX matrix, BE matrix, or implicit
+residual. The current-MAM4xx adapter must compare the returned `nsubmix`
+directly for `t=0,1,6`, including a profile for which this controller alone
+sets the stable FE step. Legacy MAM4xx `1b02f272...` at `t=0` remains an
+expected failure and cannot satisfy the current gate.
+
+#### Signed no-flux operator and implicit rows
+
+Number active levels from `0` through `n-1` after removing levels above `t`.
+Let `w_k=\Delta p_k/g`, let nonnegative `E_k` be the shared exchange at the
+interface above level `k`, and define
+
+\[
+d_k^{\uparrow}=E_k/w_k,\qquad
+d_k^{\downarrow}=E_{k+1}/w_k,
+\]
+
+with `E_0=E_n=0`. Let `o_k^{up}` and `o_k^{down}` be the cloud-overlap factors
+toward levels `k-1` and `k+1`. Thus
+`d_0^{up}=d_{n-1}^{down}=0`; no clamped neighbor is a physical boundary flux.
+The signed scalar cloud/droplet matrix `A_C=I-h L_C` has rows
+
+\[
+(A_C)_{k,k}=1+h(d_k^{\uparrow}+d_k^{\downarrow}),
+\]
+
+\[
+(A_C)_{k,k-1}=-h d_k^{\uparrow}o_k^{up},\qquad
+(A_C)_{k,k+1}=-h d_k^{\downarrow}o_k^{down}.
+\]
+
+The scalar interstitial matrix `A_I=I-h L_I` has the same diagonal and
+
+\[
+(A_I)_{k,k-1}=-h d_k^{\uparrow},\qquad
+(A_I)_{k,k+1}=-h d_k^{\downarrow}.
+\]
+
+Missing off-diagonal entries in the top and bottom rows are exactly zero. The
+IMEX interstitial right-hand side receives the positive return terms
+
+\[
+h d_k^{\uparrow}(1-o_k^{up})C_{k-1}^{n+1}
++h d_k^{\downarrow}(1-o_k^{down})C_{k+1}^{n+1}.
+\]
+
+For BE, order each level block as `x_k=(C_k,I_k)^T`, write
+`lambda_k=1+h(d_k^{up}+d_k^{down})`, and, away from the bottom source branch,
+use
+
+\[
+L_k=-h d_k^{up}
+\begin{bmatrix}o_k^{up}&0\\1-o_k^{up}&1\end{bmatrix},
+\qquad B_k=\lambda_k I_2,
+\]
+
+\[
+U_k=
+\begin{bmatrix}
+-h d_k^{down}o_k^{down}&-h a_k\\
+-h d_k^{down}(1-o_k^{down})&-h d_k^{down}+h a_k
+\end{bmatrix}.
+\]
+
+Here the approved non-bottom activation coupling is exactly
+`S_k=a_k I_(k+1)`. Consequently `L_0=0`. At a no-flux bottom `U_(n-1)=0`
+except that the retained current-C++ bottom source
+`S_(n-1)=a_(n-1)(I_(n-1)+C_(n-1))` is incorporated into
+
+\[
+B_{n-1}=
+\begin{bmatrix}
+\lambda-ha&-ha\\ha&\lambda+ha
+\end{bmatrix}.
+\]
+
+This bottom row is valid only while the current `max(0,tmpa)` branch remains
+the same. If a candidate state would change that branch, the BE step must fail
+with an outside-linear-branch diagnostic; it must not silently solve a
+different equation. Number and mass use distinct `a_k` matrix families when
+their activation rates differ. After the aerosol blocks, the droplet scalar
+system uses `A_C` with the current droplet source independently assembled from
+the solved modal-number state. Its source signs and bottom contribution must
+be checked independently of the aerosol block bands.
+
+The host-only BE implementation uses a 2-by-2 block Thomas factorization and
+solve. A zero or unsafe scalar or 2-by-2 pivot fails deterministically when its
+magnitude is at most
+
+\[
+100\,\epsilon\,\lVert A\rVert_{\infty}.
+\]
+
+The dense partial-pivoting oracle must assemble the physical equations
+directly into a `2*n` by `2*n` matrix. It may not reuse block bands, BE
+assembly helpers, or the block Thomas factorization. The raw BE solution is
+checked for positivity before the common zero-cloud projection; the projection
+is then tested separately for isolated, contiguous, and all-zero masks.
+
+#### Matrix-family reuse
+
+Factorization reuse is allowed once per distinct matrix family per column.
+IMEX has one cloud/droplet scalar family and one interstitial scalar family.
+BE has separate number and mass 2-by-2 block families per activation mode when
+their coefficients differ, plus the droplet scalar family. Identical matrices
+may share a factorization across right-hand sides, but no matrix, factorization,
+or right-hand side may be reused across columns. Repeated matched-error steps
+may reuse only within the same column, family, timestep, coefficient set, and
+bottom-branch state.
+
+#### Diagnostic equations and classifications
+
+For each aerosol pair `j`, every method reports
+
+\[
+\Delta L_{j,total}=L_{j,post}-L_{j,pre},
+\]
+
+\[
+\Delta L_{j,clip}=\sum_s\sum_k w_k
+[(I_{j,k}^{clip}+C_{j,k}^{clip})-(I_{j,k}^{raw}+C_{j,k}^{raw})],
+\]
+
+\[
+\Delta L_{j,operator}=\Delta L_{j,total}-\Delta L_{j,clip}.
+\]
+
+IMEX and BE set `Delta L_clip=0` because clipping is prohibited. A zero initial
+ledger uses an absolute, not relative, conservation tolerance. FE additionally
+forms at every substep and for every field the physical residual
+
+\[
+r_s=q_{raw}^{s+1}-q_{clip}^{s}-\Delta t_m F(q_{clip}^{s}).
+\]
+
+IMEX and BE form
+
+\[
+r=q^{n+1}-q^n-h(F_{explicit}+F_{implicit})
+\]
+
+directly from the physical interface coefficients and activation equations.
+Residual normalizations may contain only like-unit terms from that field; mass,
+aerosol number, and droplet number are never combined. All diagnostic paths
+are exercised after multiplying state magnitudes by `1e-12`, `1`, and `1e12`.
+Any nonfinite state, matrix, right-hand side, solution, ledger, residual, or
+normalization fails closed.
+
+All raw negative values are counted. A negative is material when it is below
+`-10*epsilon*field_scale`, where the scale is the larger of the field's maximum
+initial and maximum raw absolute value. Roundoff negatives are reported but do
+not fail a method. Any required admissible IMEX or BE case with a material
+negative fails that method. FE retains production per-substep clipping and
+reports its frequency, magnitude, and ledger change. Any optional implicit
+fallback clipping is a separately labeled experiment and cannot repair a
+method gate.
+
+#### Required numerical matrix and gates
+
+The accuracy gate covers level counts `1,2,3,127,128`; overlap values
+`0,0.25,0.5,0.75,1`; activation strengths `0,0.1,0.5,0.9` times the limiter
+and limiter-active strength `2.0`; active aerosol-pair counts `1,4,8,16,25`
+(`3,9,17,33,51` transported fields); zero, typical, and strong mixing; and
+deterministic seed `0x4E44524F`.
+
+Analytic exact solutions are used where available. Otherwise, an independently
+assembled adaptive Dormand-Prince 5(4) oracle evaluates the physical right-hand
+side with `rtol=1e-12` and field-scaled absolute tolerances. Repeating the
+reference with tolerances ten times tighter must change every field by no more
+than `2e-11`. Each method must have observed first-order slope in
+`[0.85,1.15]`, `R^2>=0.98`, double-precision residual at most `1e-11`, ledger
+error at most `max(1e-11,5*nlev*epsilon)`, no material negative, and three
+serial runs with bitwise-identical outputs. Only methods passing their complete
+gate enter performance comparisons.
+
+#### Required local CPU screen
+
+Performance cases cover levels `1,2,3,16,32,64,72,127,128`; active aerosol
+pairs `1,4,8,16,25`; column batches `1,16,64,256,1024`; typical and strong
+mixing; ACI intervals `33.33,50,75,100,150,300` seconds; and FE `nsubmix`
+`1,2,3,5,8,16,21`. The timed full advance includes assembly, limiter and
+controller logic, matrix and right-hand-side work, copies, factorizations,
+solves, positivity checks, FE clipping, state update, and required fences.
+Separable subtimers and matched diagnostics-off/on runs report instrumentation
+overhead.
+
+Each case uses 10 warmups and 30 through 100 measured repetitions. Sampling
+stops only when a fixed-seed 10,000-resample bootstrap median 95% confidence
+interval has less than 5% half-width or 100 repetitions are reached. Methods
+are interleaved and output checksums are consumed. Runtime-versus-error targets
+are `1e-2,3e-3,1e-3,3e-4,1e-4`; extrapolation is prohibited. Break-even is the
+smallest measured FE `nsubmix` whose median runtime is at least the candidate
+median, with interpolation only between adjacent measured FE values and with
+bootstrap uncertainty carried through. Points with FE clipping or implicit
+material negativity are excluded. Hybrid results are threshold and packing-
+overhead estimates only, and local Mac measurements cannot support a GPU
+speedup claim.
 
 ### Numerical contract: operator and integrator
 
@@ -2020,6 +2271,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-18 | User / Codex | Approved and froze the standalone cross-method screening contract: current and archived dependency revisions, controller-only first-active-level FE rate, signed no-flux IMEX and BE rows, block-Thomas and independent dense-oracle rules, diagnostic decompositions, matrix-family reuse, complete numerical and performance grids, acceptance thresholds, and test-only scope. Production physics remains unchanged. |
 | 2026-08-17 | User / Codex | Documented the approved diagnostic-only implementation of the exact `nsubmix` count, per-physics-step sum, and per-physics-step maximum; rebased it onto current E3SM and MAM4xx; distinguished the repaired current paths from the two older defects; and kept all operator equations unchanged. |
 | 2026-08-06 | Independent reviewer / Codex | Recorded strict independent `PASS` decisions for the corrected Forward Euler and IMEX gates at candidate `2c4427e` after fresh sanitizer/debug and optimized reruns, oracle-sensitivity mutations, and independent clipping and fractional-overlap hand checks. The Backward Euler gate may proceed. |
 | 2026-08-06 | Codex | Remediated the second independent FE/IMEX gate review with mode-sensitive independent activation oracles, complete exact clipping diagnostics, an IMEX limiter-active direct oracle, focused finite-stage failure probes, a reproducible CMake/CTest driver, and fresh sanitizer/debug plus optimized evidence. Both gates remain pending independent review. |

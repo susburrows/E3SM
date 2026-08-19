@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "stacks": {
+    "current": {
+      "purpose": "2026-08-18 cross-method screening",
+      "repositories": {
+        "e3sm": {
+          "url": "https://github.com/E3SM-Project/E3SM.git",
+          "sha": "e2c578e40f6602a108eff577091de86a453624ab",
+          "gitlinks": {
+            "externals/ekat": "3a1485aecfed7a036e4fa30ce845498fd37975e2",
+            "externals/mam4xx": "0d076d8ebb004a18f05f51f97b08edd9def6826f"
+          }
+        },
+        "ekat": {
+          "url": "https://github.com/E3SM-Project/EKAT.git",
+          "sha": "3a1485aecfed7a036e4fa30ce845498fd37975e2",
+          "gitlinks": {
+            "extern/kokkos": "23745d8494203711a6090d0a201c3ae3bf57853b"
+          }
+        },
+        "kokkos": {
+          "url": "https://github.com/kokkos/kokkos.git",
+          "sha": "23745d8494203711a6090d0a201c3ae3bf57853b"
+        },
+        "mam4xx": {
+          "url": "https://github.com/eagles-project/mam4xx.git",
+          "sha": "0d076d8ebb004a18f05f51f97b08edd9def6826f"
+        }
+      }
+    },
+    "archived": {
+      "purpose": "2026-08-06 FE/IMEX gate evidence; historical only",
+      "repositories": {
+        "e3sm": {
+          "url": "https://github.com/E3SM-Project/E3SM.git",
+          "sha": "3f8d0812602730b7bcca2b02e5a4ecae42fd62d8",
+          "gitlinks": {
+            "externals/ekat": "65cda3ff61abe22add622b56cee6234e29fc51c4",
+            "externals/haero": "8f9b61aed4252461d76eb7c206927e4a005930f5",
+            "externals/mam4xx": "1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db"
+          }
+        },
+        "ekat": {
+          "url": "https://github.com/E3SM-Project/EKAT.git",
+          "sha": "65cda3ff61abe22add622b56cee6234e29fc51c4",
+          "gitlinks": {
+            "extern/kokkos": "6a19eb9454da490dbf785443d8f021028baeb161"
+          }
+        },
+        "haero": {
+          "url": "https://github.com/eagles-project/haero.git",
+          "sha": "8f9b61aed4252461d76eb7c206927e4a005930f5"
+        },
+        "kokkos": {
+          "url": "https://github.com/kokkos/kokkos.git",
+          "sha": "6a19eb9454da490dbf785443d8f021028baeb161"
+        },
+        "mam4xx": {
+          "url": "https://github.com/eagles-project/mam4xx.git",
+          "sha": "1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db"
+        }
+      }
+    }
+  }
+}

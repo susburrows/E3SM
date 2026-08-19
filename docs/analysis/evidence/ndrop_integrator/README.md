@@ -4,15 +4,53 @@ This directory contains test-only code for the approved standalone numerical
 experiment in `docs/design/eamxx_mam4xx_ndrop.md`. It is not linked into E3SM
 or MAM4xx production targets.
 
+## Locked dependency workflow
+
+`dependency_lock.json` records two immutable stacks. `current` is the only
+stack authorized for the 2026-08-18 cross-method screen; `archived` preserves
+the 2026-08-06 FE/IMEX evidence and must not be substituted for the current
+gate. Neither workflow changes the production gitlinks in this E3SM worktree.
+
+Prepare clean detached checkouts and a machine-readable provenance record in a
+short unsynchronized directory:
+
+```bash
+./prepare_locked_dependencies.sh \
+  --stack current \
+  --root /private/tmp/ndrop-integrator-locked-current \
+  --build-type Release \
+  --generator Ninja \
+  --cmake-flags='-O3 -DNDEBUG'
+```
+
+The script obtains the locked E3SM base from the local repository, obtains the
+locked MAM4xx, EKAT, and Kokkos revisions in separate directories, verifies
+the E3SM and EKAT gitlinks, and rejects a SHA mismatch, attached HEAD, or dirty
+checkout without resetting it. Its JSON record contains locked and actual
+SHAs, dirty state, the source-worktree revision and dirty state, compiler and
+CMake identity, build settings, CPU/OS identity, and the exact invocation.
+Rerun with `--verify-only` before each retained gate or timing run.
+
+The preparation script itself has a bounded behavior test that uses temporary
+local repositories only:
+
+```bash
+./test_prepare_locked_dependencies.sh
+```
+
+It proves clean success and fail-closed behavior for dirty and SHA-mismatched
+checkouts. The test owns and removes only its `mktemp` directory below
+`/private/tmp`.
+
 The first gate implements the canonical shared-interface operator and the
 current Forward Euler subcycling, activation-rate limiting, alternating work
 buffers, and componentwise positivity clipping. The test suite covers all 25
 aerosol constituents and droplet number.
 
 Build and run outside the OneDrive source tree. `Kokkos_DIR` must identify a
-Serial Kokkos build matching the checked-out EKAT revision. The exact-current
-adapter also requires the Haero source; initialize that submodule or pass its
-location explicitly.
+Serial Kokkos build matching the selected locked EKAT revision. The archived
+exact-current adapter also requires the archived Haero source; pass its locked
+checkout explicitly when reproducing that historical gate.
 
 ```bash
 cmake -S /path/to/E3SM/docs/analysis/evidence/ndrop_integrator \
