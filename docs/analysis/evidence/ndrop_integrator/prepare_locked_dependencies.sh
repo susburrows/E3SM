@@ -5,7 +5,8 @@ set -euo pipefail
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 lock_file="$script_dir/dependency_lock.json"
 stack=current
-prepare_root="/private/tmp/ndrop-integrator-locked-current"
+prepare_root=
+results_root="/Users/burr114/e3sm-results/ndrop-screening"
 source_root=$(git -C "$script_dir" rev-parse --show-toplevel)
 record_file=
 verify_only=false
@@ -20,10 +21,11 @@ Usage: prepare_locked_dependencies.sh [options]
 
 Options:
   --stack NAME          Lock stack to prepare (default: current).
-  --root PATH           Destination below /private/tmp.
+  --root PATH           Destination below /Users/burr114/e3sm-scratch.
+  --results-root PATH   Retained output root below /Users/burr114/e3sm-results.
   --source-root PATH    E3SM repository containing the locked base commit.
   --lock PATH           Alternate lock manifest (used by behavior tests).
-  --record PATH         Provenance JSON output (default: ROOT/provenance.json).
+  --record PATH         Provenance JSON output below the retained-results root.
   --verify-only         Do not clone or fetch; only verify existing checkouts.
   --build-type TYPE     CMake build type recorded in provenance.
   --generator NAME      CMake generator recorded in provenance.
@@ -51,6 +53,14 @@ while (($#)); do
     ;;
   --root)
     prepare_root=$2
+    shift 2
+    ;;
+  --results-root=*)
+    results_root=${1#*=}
+    shift
+    ;;
+  --results-root)
+    results_root=$2
     shift 2
     ;;
   --source-root=*)
@@ -117,10 +127,19 @@ while (($#)); do
   esac
 done
 
+prepare_root=${prepare_root:-"/Users/burr114/e3sm-scratch/ndrop-screening/dependencies/$stack"}
+
 case "$prepare_root" in
-/private/tmp/*) ;;
+/Users/burr114/e3sm-scratch/*) ;;
 *)
-  echo "preparation root must be a specific path below /private/tmp" >&2
+  echo "preparation root must be a specific path below /Users/burr114/e3sm-scratch" >&2
+  exit 2
+  ;;
+esac
+case "$results_root" in
+/Users/burr114/e3sm-results/*) ;;
+*)
+  echo "results root must be a specific path below /Users/burr114/e3sm-results" >&2
   exit 2
   ;;
 esac
@@ -134,7 +153,14 @@ if ! git -C "$source_root" rev-parse --show-toplevel >/dev/null 2>&1; then
   exit 2
 fi
 
-record_file=${record_file:-"$prepare_root/provenance.json"}
+record_file=${record_file:-"$results_root/provenance/dependencies-$stack.json"}
+case "$record_file" in
+/Users/burr114/e3sm-results/*) ;;
+*)
+  echo "provenance record must be below /Users/burr114/e3sm-results" >&2
+  exit 2
+  ;;
+esac
 mkdir -p "$prepare_root"
 
 repository_rows=()

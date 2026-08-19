@@ -11,13 +11,15 @@ stack authorized for the 2026-08-18 cross-method screen; `archived` preserves
 the 2026-08-06 FE/IMEX evidence and must not be substituted for the current
 gate. Neither workflow changes the production gitlinks in this E3SM worktree.
 
-Prepare clean detached checkouts and a machine-readable provenance record in a
-short unsynchronized directory:
+Prepare clean detached checkouts below the local scratch root and write the
+machine-readable provenance record to the retained-results root:
 
 ```bash
 ./prepare_locked_dependencies.sh \
   --stack current \
-  --root /private/tmp/ndrop-integrator-locked-current \
+  --root /Users/burr114/e3sm-scratch/ndrop-screening/dependencies/current \
+  --results-root /Users/burr114/e3sm-results/ndrop-screening \
+  --record /Users/burr114/e3sm-results/ndrop-screening/provenance/dependencies-current.json \
   --build-type Release \
   --generator Ninja \
   --cmake-flags='-O3 -DNDEBUG'
@@ -40,7 +42,8 @@ local repositories only:
 
 It proves clean success and fail-closed behavior for dirty and SHA-mismatched
 checkouts. The test owns and removes only its `mktemp` directory below
-`/private/tmp`.
+`/Users/burr114/e3sm-scratch/` and its matching temporary provenance directory
+below `/Users/burr114/e3sm-results/`.
 
 The first gate implements the canonical shared-interface operator and the
 current Forward Euler subcycling, activation-rate limiting, alternating work
@@ -54,13 +57,14 @@ checkout explicitly when reproducing that historical gate.
 
 ```bash
 cmake -S /path/to/E3SM/docs/analysis/evidence/ndrop_integrator \
-  -B /private/tmp/ndrop-int-debug \
+  -B /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DKokkos_DIR=/path/to/kokkos-debug-build \
+  -DKokkos_DIR=/Users/burr114/e3sm-scratch/ndrop-screening/kokkos-install-debug/lib/cmake/Kokkos \
   -DNDROP_ENABLE_SANITIZERS=ON \
   -DHAERO_SOURCE=/path/to/haero
-cmake --build /private/tmp/ndrop-int-debug --parallel 4
-ctest --test-dir /private/tmp/ndrop-int-debug --output-on-failure
+cmake --build /Users/burr114/e3sm-scratch/ndrop-screening/build/debug --parallel 4
+ctest --test-dir /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
+  --output-on-failure
 ```
 
 Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and

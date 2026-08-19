@@ -4,8 +4,12 @@ set -euo pipefail
 
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 prepare_script="$script_dir/prepare_locked_dependencies.sh"
-fixture_root=$(mktemp -d /private/tmp/ndrop-lock-test.XXXXXX)
-trap 'rm -rf -- "$fixture_root"' EXIT
+scratch_base=/Users/burr114/e3sm-scratch
+results_base=/Users/burr114/e3sm-results
+mkdir -p "$scratch_base" "$results_base"
+fixture_root=$(mktemp -d "$scratch_base/ndrop-lock-test.XXXXXX")
+fixture_results="$results_base/$(basename "$fixture_root")"
+trap 'rm -rf -- "$fixture_root" "$fixture_results"' EXIT
 
 new_repo() {
   local name=$1
@@ -73,14 +77,17 @@ with open(path, "w", encoding="utf-8") as stream:
 PY
 
 prepared="$fixture_root/prepared"
+mkdir -p "$fixture_results"
 "$prepare_script" --lock "$lock_file" --stack current \
   --source-root "$fixture_root/sources/e3sm" --root "$prepared" \
-  --record "$prepared/provenance.json" >/dev/null
+  --results-root "$fixture_results" \
+  --record "$fixture_results/provenance.json" >/dev/null
 
-test -s "$prepared/provenance.json"
+test -s "$fixture_results/provenance.json"
 "$prepare_script" --lock "$lock_file" --stack current \
   --source-root "$fixture_root/sources/e3sm" --root "$prepared" \
-  --record "$prepared/provenance-verified.json" --verify-only >/dev/null
+  --results-root "$fixture_results" \
+  --record "$fixture_results/provenance-verified.json" --verify-only >/dev/null
 
 printf '%s\n' dirty >"$prepared/mam4xx/untracked.txt"
 if "$prepare_script" --lock "$lock_file" --stack current \

@@ -21,7 +21,9 @@ evidence needed to revise the estimates.
 - Do not initialize GSD, create a new project, or change production EAMxx or
   MAM4xx physics. All new methods and adapters remain standalone test code.
 - Preserve unrelated working-tree changes. Work only on the isolated branch
-  named above. Put builds and generated results under `/private/tmp`.
+  named above. Put dependency checkouts, builds, and other rebuildable output
+  under `/Users/burr114/e3sm-scratch/ndrop-screening`; put retained results and
+  provenance under `/Users/burr114/e3sm-results/ndrop-screening`.
 - Before numerical-code changes, amend the authoritative design with the exact
   operator, boundaries, limiter/controller semantics, solver equations,
   diagnostics, tests, tolerances, and revision history recorded below.
@@ -36,8 +38,9 @@ evidence needed to revise the estimates.
   remains expected-failure historical evidence, never a passing current gate.
 - Do not change production gitlinks. A checked-in lock manifest and preparation
   script must construct detached clean dependency checkouts under
-  `/private/tmp`, verify exact SHAs and clean state, and record compiler/build
-  metadata. Fail closed on mismatch.
+  `/Users/burr114/e3sm-scratch/ndrop-screening`, verify exact SHAs and clean
+  state, and record compiler/build metadata under
+  `/Users/burr114/e3sm-results/ndrop-screening`. Fail closed on mismatch.
 - Pin the current comparison stack to E3SM
   `e2c578e40f6602a108eff577091de86a453624ab`, MAM4xx
   `0d076d8ebb004a18f05f51f97b08edd9def6826f`, EKAT
@@ -120,13 +123,15 @@ residuals; matrix-family reuse; all validation/performance grids and acceptance
 criteria; test-only scope; exact revisions; approval on 2026-08-18; and a
 revision-history row. Add `dependency_lock.json` and
 `prepare_locked_dependencies.sh` in this directory. The script must verify or
-construct clean detached dependency checkouts under `/private/tmp`, validate
-all locked commits and gitlinks without changing production gitlinks, and emit
-a machine-readable provenance record containing repository SHAs, dirty state,
-compiler identity/version, CMake generator/build type/flags, CPU/OS identity,
-and the exact invocation. Add behavior tests for clean success and closed
-failure on any SHA/dirty-state mismatch. Update `README.md` with the locked
-workflow. Commit as `docs(ndrop): approve current integrator screening contract`.
+construct clean detached dependency checkouts under
+`/Users/burr114/e3sm-scratch/ndrop-screening`, validate all locked commits and
+gitlinks without changing production gitlinks, and emit a machine-readable
+provenance record below `/Users/burr114/e3sm-results/ndrop-screening`
+containing repository SHAs, dirty state, compiler identity/version, CMake
+generator/build type/flags, CPU/OS identity, and the exact invocation. Add
+behavior tests for clean success and closed failure on any SHA/dirty-state
+mismatch. Update `README.md` with the locked workflow. Commit as
+`docs(ndrop): approve current integrator screening contract`.
 
 ## Task 2: Requalify Forward Euler and IMEX
 

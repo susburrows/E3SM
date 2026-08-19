@@ -903,9 +903,11 @@ The original study baseline was E3SM revision
 `e12e7d61dba924717e8f35fe8288247c1766ee30` with MAM4xx revision
 `1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`. That stack and its later
 remediation evidence remain historical. The current locked stack and expanded
-screening contract are defined below. Generated dependency checkouts, builds,
-and results must use a short unsynchronized path under `/private/tmp`; no build
-or run tree may be created in the OneDrive source tree.
+screening contract are defined below. Generated dependency checkouts and builds
+must use task-specific paths below `/Users/burr114/e3sm-scratch/`, while
+retained results and provenance must use task-specific paths below
+`/Users/burr114/e3sm-results/`. No build or run tree may be created in the
+OneDrive source tree.
 
 ### Cross-method screening execution contract
 
@@ -2271,6 +2273,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-18 | User / Codex | Replaced disposable `/private/tmp` screening storage with the approved persistent local split: temporary worktrees, dependency checkouts, and builds below `/Users/burr114/e3sm-scratch/`; retained results and provenance below `/Users/burr114/e3sm-results/`. Numerical and production-physics contracts are unchanged. |
 | 2026-08-18 | User / Codex | Approved and froze the standalone cross-method screening contract: current and archived dependency revisions, controller-only first-active-level FE rate, signed no-flux IMEX and BE rows, block-Thomas and independent dense-oracle rules, diagnostic decompositions, matrix-family reuse, complete numerical and performance grids, acceptance thresholds, and test-only scope. Production physics remains unchanged. |
 | 2026-08-17 | User / Codex | Documented the approved diagnostic-only implementation of the exact `nsubmix` count, per-physics-step sum, and per-physics-step maximum; rebased it onto current E3SM and MAM4xx; distinguished the repaired current paths from the two older defects; and kept all operator equations unchanged. |
 | 2026-08-06 | Independent reviewer / Codex | Recorded strict independent `PASS` decisions for the corrected Forward Euler and IMEX gates at candidate `2c4427e` after fresh sanitizer/debug and optimized reruns, oracle-sensitivity mutations, and independent clipping and fractional-overlap hand checks. The Backward Euler gate may proceed. |
