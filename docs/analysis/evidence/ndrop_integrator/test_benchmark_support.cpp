@@ -229,6 +229,33 @@ void test_statistics_and_accounting() {
             ndrop_test::benchmark::estimated_workspace_bytes(cases[2]) > 0,
         "workspace estimates are positive for every method");
 
+  State richardson_initial(2);
+  richardson_initial.droplet_number = {2, 4};
+  State richardson_refined = richardson_initial;
+  State richardson_coarse = richardson_initial;
+  richardson_coarse.droplet_number = {3, 2};
+  const auto richardson = ndrop_test::benchmark::richardson_errors(
+      richardson_coarse, richardson_refined, richardson_initial, {1, 3});
+  check(richardson.weighted_l1_by_field[0] == 0.5 &&
+            richardson.linf_by_field[0] == 0.5 &&
+            richardson.maximum_weighted_l1 == 0.5 &&
+            richardson.maximum_linf == 0.5 &&
+            richardson.screening_error == 0.5,
+        "Richardson errors match the hand-derived weighted and maximum norms");
+  check(richardson.weighted_l1_by_field[1] == 0 &&
+            richardson.linf_by_field[50] == 0,
+        "Richardson field ordering retains zero unchanged aerosol fields");
+
+  bool bad_richardson_rejected = false;
+  try {
+    static_cast<void>(ndrop_test::benchmark::richardson_errors(
+        richardson_coarse, richardson_refined, richardson_initial, {1}));
+  } catch (const std::invalid_argument &) {
+    bad_richardson_rejected = true;
+  }
+  check(bad_richardson_rejected,
+        "Richardson errors reject dimensionally inconsistent weights");
+
   AdvanceResult validated;
   AdvanceResult lean;
   validated.state = make_state();

@@ -47,6 +47,59 @@ bool state_bitwise_equal(const State &lhs, const State &rhs) {
   return true;
 }
 
+struct FieldErrors {
+  Real weighted_l1 = 0;
+  Real linf = 0;
+};
+
+FieldErrors normalized_field_errors(const std::vector<Real> &coarse,
+                                    const std::vector<Real> &refined,
+                                    const std::vector<Real> &initial,
+                                    const std::vector<Real> &weights) {
+  if (coarse.size() != refined.size() || coarse.size() != initial.size() ||
+      coarse.size() != weights.size()) {
+    throw std::invalid_argument("Richardson field dimensions do not match");
+  }
+  FieldErrors errors;
+  Real refined_l1 = 0;
+  Real initial_l1 = 0;
+  Real refined_linf = 0;
+  Real initial_linf = 0;
+  for (std::size_t level = 0; level < coarse.size(); ++level) {
+    if (!std::isfinite(coarse[level]) || !std::isfinite(refined[level]) ||
+        !std::isfinite(initial[level]) || !std::isfinite(weights[level]) ||
+        weights[level] < 0) {
+      throw std::invalid_argument(
+          "Richardson field data must be finite with nonnegative weights");
+    }
+    const Real difference = std::abs(coarse[level] - refined[level]);
+    errors.weighted_l1 += weights[level] * difference;
+    refined_l1 += weights[level] * std::abs(refined[level]);
+    initial_l1 += weights[level] * std::abs(initial[level]);
+    errors.linf = std::max(errors.linf, difference);
+    refined_linf = std::max(refined_linf, std::abs(refined[level]));
+    initial_linf = std::max(initial_linf, std::abs(initial[level]));
+    if (!std::isfinite(errors.weighted_l1) ||
+        !std::isfinite(refined_l1) || !std::isfinite(initial_l1) ||
+        !std::isfinite(errors.linf) || !std::isfinite(refined_linf) ||
+        !std::isfinite(initial_linf)) {
+      throw std::invalid_argument("Richardson error arithmetic overflowed");
+    }
+  }
+  const Real l1_scale = std::max(refined_l1, initial_l1);
+  const Real linf_scale = std::max(refined_linf, initial_linf);
+  if (l1_scale > 0) {
+    errors.weighted_l1 /= l1_scale;
+  }
+  if (linf_scale > 0) {
+    errors.linf /= linf_scale;
+  }
+  if (!std::isfinite(errors.weighted_l1) || !std::isfinite(errors.linf)) {
+    throw std::invalid_argument("Richardson normalized error is nonfinite");
+  }
+  return errors;
+}
+
 } // namespace
 
 const char *method_name(const Method method) {
@@ -214,6 +267,40 @@ bool timing_path_matches_validated(const AdvanceResult &validated,
          validated.diagnostics.material_negative_count ==
              lean.diagnostics.material_negative_count &&
          state_bitwise_equal(validated.state, lean.state);
+}
+
+RichardsonErrors richardson_errors(const State &coarse, const State &refined,
+                                   const State &initial,
+                                   const std::vector<Real> &weights) {
+  if (coarse.nlev() != refined.nlev() || coarse.nlev() != initial.nlev() ||
+      coarse.nlev() != weights.size()) {
+    throw std::invalid_argument("Richardson state dimensions do not match");
+  }
+  RichardsonErrors result;
+  const auto assign = [&result](const std::size_t field,
+                                const FieldErrors &errors) {
+    result.weighted_l1_by_field[field] = errors.weighted_l1;
+    result.linf_by_field[field] = errors.linf;
+    result.maximum_weighted_l1 =
+        std::max(result.maximum_weighted_l1, errors.weighted_l1);
+    result.maximum_linf = std::max(result.maximum_linf, errors.linf);
+  };
+  assign(0, normalized_field_errors(coarse.droplet_number,
+                                    refined.droplet_number,
+                                    initial.droplet_number, weights));
+  for (int field = 0; field < num_constituents; ++field) {
+    assign(1 + 2 * field,
+           normalized_field_errors(coarse.interstitial[field],
+                                   refined.interstitial[field],
+                                   initial.interstitial[field], weights));
+    assign(2 + 2 * field,
+           normalized_field_errors(coarse.cloudborne[field],
+                                   refined.cloudborne[field],
+                                   initial.cloudborne[field], weights));
+  }
+  result.screening_error =
+      std::max(result.maximum_weighted_l1, result.maximum_linf);
+  return result;
 }
 
 } // namespace ndrop_test::benchmark

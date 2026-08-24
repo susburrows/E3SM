@@ -3,6 +3,7 @@
 
 #include "ndrop_integrator.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -31,6 +32,14 @@ struct BootstrapInterval {
   Real relative_half_width = 0;
 };
 
+struct RichardsonErrors {
+  std::array<Real, 51> weighted_l1_by_field{};
+  std::array<Real, 51> linf_by_field{};
+  Real maximum_weighted_l1 = 0;
+  Real maximum_linf = 0;
+  Real screening_error = 0;
+};
+
 const char *method_name(Method method);
 std::vector<Case> required_cases(bool smoke = false);
 Real sample_median(std::vector<Real> samples);
@@ -41,6 +50,9 @@ std::uint64_t state_checksum(const State &state);
 std::size_t estimated_workspace_bytes(const Case &benchmark_case);
 bool timing_path_matches_validated(const AdvanceResult &validated,
                                    const AdvanceResult &lean);
+RichardsonErrors richardson_errors(const State &coarse, const State &refined,
+                                   const State &initial,
+                                   const std::vector<Real> &weights);
 
 } // namespace ndrop_test::benchmark
 

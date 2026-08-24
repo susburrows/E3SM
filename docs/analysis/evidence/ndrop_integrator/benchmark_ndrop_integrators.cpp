@@ -34,6 +34,7 @@ using ndrop_test::State;
 using ndrop_test::benchmark::BootstrapInterval;
 using ndrop_test::benchmark::Case;
 using ndrop_test::benchmark::Method;
+using ndrop_test::benchmark::RichardsonErrors;
 using ndrop_test::num_constituents;
 using ndrop_test::num_modes;
 
@@ -66,6 +67,10 @@ struct RowResult {
   std::string message;
   std::string exclusion_reason;
   AdvanceDiagnostics validation_diagnostics;
+  bool richardson_ok = false;
+  std::string richardson_message;
+  RichardsonErrors richardson;
+  std::uint64_t refined_checksum = 0;
   std::vector<Real> samples;
   std::vector<Real> instrumented_samples;
   std::vector<Real> fence_samples;
@@ -114,6 +119,19 @@ std::string joined_samples(const std::vector<Real> &samples) {
       text << ';';
     }
     text << samples[index];
+  }
+  return text.str();
+}
+
+template <std::size_t Size>
+std::string joined_values(const std::array<Real, Size> &values) {
+  std::ostringstream text;
+  text << std::setprecision(17);
+  for (std::size_t index = 0; index < values.size(); ++index) {
+    if (index > 0) {
+      text << ';';
+    }
+    text << values[index];
   }
   return text.str();
 }
@@ -252,6 +270,22 @@ AdvanceResult advance_case(const Case &benchmark_case, const State &state,
   throw std::logic_error("unknown benchmark method");
 }
 
+AdvanceResult advance_refined_case(const Case &benchmark_case,
+                                   const State &state,
+                                   const OperatorData &op) {
+  Case refined_case = benchmark_case;
+  if (benchmark_case.method == Method::forward_euler) {
+    refined_case.forced_fe_substeps *= 2;
+    return advance_case(refined_case, state, op, AdvanceControl{});
+  }
+  refined_case.dt /= 2;
+  const auto first = advance_case(refined_case, state, op, AdvanceControl{});
+  if (!first.ok) {
+    return first;
+  }
+  return advance_case(refined_case, first.state, op, AdvanceControl{});
+}
+
 void add_phase(AdvancePhaseTimings &sum,
                const AdvancePhaseTimings &value) {
   sum.setup += value.setup;
@@ -381,13 +415,36 @@ void validate_row(RowResult &row) {
   if (!validation.ok) {
     row.eligible = false;
     row.exclusion_reason = validation.message;
+    row.richardson_message = "coarse validation failed: " + validation.message;
   } else if (row.benchmark_case.method == Method::forward_euler &&
              validation.diagnostics.clipping_count > 0) {
     row.eligible = false;
     row.exclusion_reason = "forward_euler_clipping";
+    row.richardson_message = "coarse Forward Euler clipping";
   } else {
     row.eligible = true;
   }
+  if (!row.eligible) {
+    return;
+  }
+
+  const AdvanceResult refined =
+      advance_refined_case(row.benchmark_case, state, op);
+  if (!refined.ok) {
+    row.richardson_message = "refined validation failed: " + refined.message;
+    return;
+  }
+  if (row.benchmark_case.method == Method::forward_euler &&
+      refined.diagnostics.clipping_count > 0) {
+    row.richardson_message = "refined Forward Euler clipping";
+    return;
+  }
+  row.richardson = ndrop_test::benchmark::richardson_errors(
+      validation.state, refined.state, state, op.pressure_weight);
+  row.refined_checksum =
+      ndrop_test::benchmark::state_checksum(refined.state);
+  row.richardson_ok = true;
+  row.richardson_message = "ok";
 }
 
 void measure_group(std::vector<RowResult> &rows, const Arguments &arguments) {
@@ -554,6 +611,10 @@ void write_header(std::ofstream &output) {
   output << "case_id,nlev,active_pairs,transported_fields,batch_size,"
             "mixing_index,mixing_scale,dt,method,forced_fe_substeps,"
             "validation_ok,eligible,exclusion_reason,message,repetitions,"
+            "richardson_ok,richardson_message,screening_error,"
+            "richardson_maximum_weighted_l1,richardson_maximum_linf,"
+            "richardson_weighted_l1_by_field,richardson_linf_by_field,"
+            "refined_checksum,"
             "stop_reason,median_seconds_per_column,ci95_lower,ci95_upper,"
             "ci95_relative_half_width,instrumented_median_seconds_per_column,"
             "instrumented_ci95_lower,instrumented_ci95_upper,"
@@ -595,6 +656,24 @@ void write_row(std::ofstream &output, const RowResult &row,
   field(row.exclusion_reason);
   field(row.message);
   output << ',' << row.samples.size();
+  output << ',' << (row.richardson_ok ? "true" : "false");
+  field(row.richardson_message);
+  output << ','
+         << (row.richardson_ok ? real_text(row.richardson.screening_error)
+                               : std::string{})
+         << ','
+         << (row.richardson_ok
+                 ? real_text(row.richardson.maximum_weighted_l1)
+                 : std::string{})
+         << ','
+         << (row.richardson_ok ? real_text(row.richardson.maximum_linf)
+                               : std::string{});
+  field(row.richardson_ok
+            ? joined_values(row.richardson.weighted_l1_by_field)
+            : std::string{});
+  field(row.richardson_ok ? joined_values(row.richardson.linf_by_field)
+                          : std::string{});
+  field(row.richardson_ok ? hex_text(row.refined_checksum) : std::string{});
   field(row.stop_reason);
   output << ',' << timing(row.primary_interval.median) << ','
          << timing(row.primary_interval.lower) << ','
