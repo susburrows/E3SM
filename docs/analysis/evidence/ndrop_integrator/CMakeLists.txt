@@ -44,6 +44,11 @@ target_include_directories(
 configure_ndrop_target(test_imex)
 add_test(NAME ndrop_imex COMMAND test_imex)
 
+add_executable(test_backward_euler ndrop_integrator.cpp
+               ndrop_backward_euler.cpp test_backward_euler.cpp)
+configure_ndrop_target(test_backward_euler)
+add_test(NAME ndrop_backward_euler COMMAND test_backward_euler)
+
 if(NDROP_BUILD_EXACT_ADAPTER)
   if(NOT EXISTS "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in")
     message(FATAL_ERROR

@@ -90,6 +90,11 @@ struct AdvanceDiagnostics {
   int material_negative_count = 0;
   int droplet_roundoff_negative_count = 0;
   int droplet_material_negative_count = 0;
+  int block_matrix_family_count = 0;
+  int block_factorization_count = 0;
+  int block_rhs_solve_count = 0;
+  int scalar_factorization_count = 0;
+  int scalar_rhs_solve_count = 0;
   bool positivity_failure = false;
   std::array<FieldClipping, num_constituents> field_clipping{};
   std::array<Real, num_constituents> initial_ledger{};
@@ -119,6 +124,19 @@ enum class ImexFiniteProbe {
   physical_residual,
   ledger_normalization,
   ledger_decomposition
+};
+
+enum class BackwardEulerProbe {
+  solution,
+  matrix_residual,
+  physical_residual,
+  ledger_normalization,
+  ledger_decomposition,
+  block_pivot,
+  scalar_pivot,
+  material_negative,
+  roundoff_negative,
+  bottom_branch
 };
 
 int constituent_mode(int constituent);
@@ -163,6 +181,14 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
 // Test-only access to finite-value checkers whose failure branches cannot be
 // reached from a valid M-matrix and finite right-hand side.
 bool imex_nonfinite_probe_is_rejected(ImexFiniteProbe probe);
+
+// Implemented in ndrop_backward_euler.cpp by the standalone host-only gate.
+AdvanceResult advance_backward_euler(const State &initial,
+                                     const OperatorData &data, Real dt);
+
+// Test-only access to deterministic failure branches that cannot be reached
+// from a valid conservative M-matrix with finite nonnegative input.
+bool backward_euler_probe_is_rejected(BackwardEulerProbe probe);
 
 } // namespace ndrop_test
 
