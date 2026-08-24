@@ -921,4 +921,20 @@ bool backward_euler_probe_is_rejected(const BackwardEulerProbe probe) {
   return false;
 }
 
+std::array<Real, 4>
+backward_euler_bottom_block_for_probe(const Real rate_above,
+                                      const Real activation,
+                                      const Real dt) {
+  PreparedOperator op;
+  op.pressure_weight = {1, 1};
+  op.rate_above = {0, rate_above};
+  op.rate_below = {rate_above, 0};
+  op.overlap_above = {1, 1};
+  op.overlap_below = {1, 1};
+  const BlockSystem system =
+      assemble_block_system(op, {0, activation}, dt);
+  const Mat2 &bottom = system.diagonal.back();
+  return {bottom.a00, bottom.a01, bottom.a10, bottom.a11};
+}
+
 } // namespace ndrop_test

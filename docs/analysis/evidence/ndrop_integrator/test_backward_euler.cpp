@@ -487,6 +487,49 @@ void test_matrix_family_reuse() {
         "identical block matrix is factored once for all aerosol fields");
 }
 
+void test_bottom_source_stencils() {
+  constexpr Real rate_above = 0.3;
+  constexpr Real activation = 0.1;
+  constexpr Real dt = 2;
+  const Real lambda = 1 + dt * rate_above;
+  const Real source = dt * activation;
+  const auto block = ndrop_test::backward_euler_bottom_block_for_probe(
+      rate_above, activation, dt);
+  const std::array<Real, 4> expected = {
+      lambda - source, -source, source, lambda + source};
+  for (std::size_t entry = 0; entry < block.size(); ++entry) {
+    check(near(block[entry], expected[entry]),
+          "retained bottom activation block sign " +
+              std::to_string(entry));
+  }
+
+  State state(1);
+  PreparedOperator op;
+  op.pressure_weight = {1};
+  op.rate_above = {0};
+  op.rate_below = {0};
+  op.overlap_above = {1};
+  op.overlap_below = {1};
+  for (int mode = 0; mode < num_modes; ++mode) {
+    op.number_activation_rate[mode] = {Real(0.01) * (mode + 1)};
+    op.mass_activation_rate[mode] = {0};
+    const int j = expected_number_index[mode];
+    state.interstitial[j][0] = 2 + mode;
+    state.cloudborne[j][0] = 0.5 + Real(0.25) * mode;
+  }
+  const auto droplet_source =
+      ndrop_test::droplet_activation_source(state, op);
+  Real expected_source = 0;
+  for (int mode = 0; mode < num_modes; ++mode) {
+    const int j = expected_number_index[mode];
+    const Real rate = Real(0.01) * (mode + 1);
+    expected_source +=
+        rate * (2 * state.interstitial[j][0] + state.cloudborne[j][0]);
+  }
+  check(near(droplet_source[0], expected_source),
+        "bottom droplet source uses positive a*(2I+C) contribution");
+}
+
 void test_controller_is_not_physical() {
   const State state = make_state(8);
   OperatorData base = make_operator(8, 0.4, 0.2, 0.5);
@@ -833,6 +876,7 @@ int main() {
     test_identity_and_boundaries();
     test_dense_oracle_grid();
     test_matrix_family_reuse();
+    test_bottom_source_stencils();
     test_controller_is_not_physical();
     test_uniform_and_zero_cloud();
     test_zero_overlap_with_mixing();

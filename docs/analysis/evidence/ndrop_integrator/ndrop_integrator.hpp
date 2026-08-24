@@ -190,6 +190,12 @@ AdvanceResult advance_backward_euler(const State &initial,
 // from a valid conservative M-matrix with finite nonnegative input.
 bool backward_euler_probe_is_rejected(BackwardEulerProbe probe);
 
+// Test-only inspection of the retained current-C++ nonzero bottom activation
+// block before the canonical no-flux limiter reduces that coefficient to zero.
+std::array<Real, 4>
+backward_euler_bottom_block_for_probe(Real rate_above, Real activation,
+                                      Real dt);
+
 } // namespace ndrop_test
 
 #endif
