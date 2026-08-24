@@ -72,8 +72,8 @@ ctest --test-dir /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
 Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
 `-DNDROP_ENABLE_SANITIZERS=OFF` for the optimized gate. The checked-in
 `CMakeLists.txt` applies warnings-as-errors to all harness sources and registers
-the Forward Euler, IMEX, Backward Euler, and exact-current executables with
-CTest.
+the Forward Euler, IMEX, Backward Euler, common cross-scheme, and exact-current
+executables with CTest.
 
 The current adapter validates the repaired current-MAM4xx `top_lev=0` path.
 The archived `1b02f272...` `top_lev=0` expected failure and its historical
@@ -113,12 +113,53 @@ number shares the cloud-borne matrix family.
 The `ndrop`-specific IMEX source evaluation, matrix/right-hand-side assembly,
 solve order, zero-cloud transition, positivity checks, and ledger diagnostics
 are implemented in the standalone harness. SUNDIALS and PETSc are not used.
-The harness also does not implement EKAT's GPU cyclic-reduction path, Backward
-Euler's coupled block-tridiagonal solve, a hybrid FE/IMEX policy, or any
-higher-order implicit method. Those are separate, unvalidated stages and are
-not implied by the CPU correctness results below.
+The harness implements a host-only 2-by-2 block-Thomas Backward Euler baseline
+with an independent dense oracle. It does not implement a GPU block solver,
+EKAT's GPU cyclic-reduction path, a hybrid FE/IMEX policy, or any higher-order
+implicit method. Those are separate, unvalidated stages and are not implied by
+the CPU correctness results below.
 
 ## Gate validation status
+
+### Executed common cross-scheme gate: 2026-08-24
+
+Task 4 implemented the independent adaptive Dormand--Prince 5(4) physical-RHS
+oracle and common FE/IMEX/BE gate at commit `7807aedfde`. The complete exact
+Cartesian product contains 1,875 cases and 5,625 method records across level
+counts `1,2,3,127,128`, overlap `0,0.25,0.5,0.75,1`, activation strengths
+`0,0.1,0.5,0.9,2`, active aerosol-pair counts `1,4,8,16,25`, and zero,
+typical, and strong mixing.
+
+The debug/ASan/UBSan and optimized Kokkos Serial executables each passed
+11,880 checks and produced bitwise-identical CSV and Markdown results. FE,
+IMEX, and BE each passed all 1,875 matrix cases, all-field first-order slope
+and `R^2` gates, all three pairwise Richardson common-solution bounds, residual
+and ledger tolerances, raw positivity, and three-run bitwise determinism. No
+matrix point produced a material negative or FE clipping. The maximum reference
+change between `rtol=1e-12` and `1e-13` is `2.0331196e-13`.
+
+Run the gate directly to retain its 50-column machine-readable matrix and
+human-readable summary:
+
+```bash
+/path/to/build/test_cross_scheme \
+  --csv /Users/burr114/e3sm-results/ndrop-screening/task4-cross-scheme/cross-scheme.csv \
+  --table /Users/burr114/e3sm-results/ndrop-screening/task4-cross-scheme/cross-scheme.md
+```
+
+Per-case fields that are not defined for a method are empty rather than
+nonfinite sentinels. The final CSV has one header, 5,625 method-case rows, and
+three convergence rows; semicolon-delimited arrays retain all 51 field errors
+and all 25 aerosol-pair diagnostics. The detailed design review, TDD record,
+results, hashes, limitations, and separate method decisions are in
+`cross_scheme_gate_review_20260824.md`. Retained artifacts are below
+`/Users/burr114/e3sm-results/ndrop-screening/task4-cross-scheme` and
+`/Users/burr114/e3sm-results/ndrop-screening/provenance`.
+
+The largest coarse one-call Linf error is `0.1129882`. The Task 4 PASS therefore
+establishes reference consistency, first-order convergence, and a common
+solution, not that one full-interval candidate step is already accurate enough
+for production. Matched-error cost remains a Task 6 decision.
 
 The current gate artifacts include:
 

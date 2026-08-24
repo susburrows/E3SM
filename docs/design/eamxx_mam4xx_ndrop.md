@@ -1178,6 +1178,33 @@ so a test-only inspection separately verifies the retained nonzero bottom block
 Changing that source branch remains a deterministic failure. Debug/ASan/UBSan
 and optimized gates pass; no production source, interface, or gitlink changed.
 
+#### Task 4 as-built synchronization
+
+The common cross-method gate was implemented at E3SM harness commit
+`7807aedfdecafe5e30b783e98e81ac4b723f56e3`. Its adaptive Dormand--Prince
+5(4) oracle independently reconstructs the complete physical right-hand side,
+including shared-interface rates, overlap, activation limiting, separate
+number/mass maps, the retained current-C++ bottom sources, and all 51 state
+fields. Analytic two-level diffusion and activation oracles and an `rtol`
+`1e-12` versus `1e-13` reference check independently gate the reference.
+
+The exact Cartesian matrix contains 1,875 cases and 5,625 method records. Each
+method performs three bitwise-identical serial advances; every record retains
+all-field weighted-L1/Linf errors, physical residuals, raw positivity,
+clipping, and signed total/operator/clipping aerosol ledgers. Error norms and
+their reductions fail closed on nonfinite inputs or intermediate arithmetic,
+and the no-material-negative rule applies to FE, IMEX, and BE alike.
+
+Clean debug/ASan/UBSan and optimized Kokkos Serial runs each pass 11,880 checks
+with identical machine-readable results. All three methods pass all 1,875
+cases, all-field first-order slopes and `R^2`, and pairwise Richardson
+common-solution bounds. The maximum reference two-tolerance change is
+`2.0331196e-13`; maximum residual and ledger errors are respectively below
+`4.1e-16` and `2.5e-15`, with no material negative or clipping case. This
+authorizes Task 5 local CPU timing only. Coarse one-call Linf errors reach
+`0.1129882`, so Task 4 does not establish full-interval production accuracy,
+matched-error cost, GPU performance, or a production recommendation.
+
 #### Required numerical matrix and gates
 
 The accuracy gate covers level counts `1,2,3,127,128`; overlap values
@@ -1690,7 +1717,9 @@ fresh independent extra-high review reran the suites, exercised mode and matrix
 mutations plus independent hand calculations, and assigned strict `PASS`
 decisions to both gates. The current locked-stack Backward Euler method-local
 gate subsequently passed in debug/sanitizer and optimized configurations on
-2026-08-24. Executed evidence is recorded in
+2026-08-24. The common Task 4 Cartesian gate then passed for FE, IMEX, and BE
+in both configurations from one committed revision; the approved local CPU
+timing phase may proceed. Executed evidence is recorded in
 [`docs/analysis/evidence/ndrop_integrator/README.md`](../analysis/evidence/ndrop_integrator/README.md).
 
 ### Accuracy and convergence validation
@@ -2336,10 +2365,11 @@ current run matrix.
 - Validation at the older evidence revision initialized both alternating work
   arrays and therefore cannot by itself establish the safety of that historical
   partial-disable path.
-- Tasks 2 and 3 now exercise repaired current-MAM4xx boundaries at
-  `top_lev=0,1,6`, verify paired aerosol ledger decompositions, and gate FE,
-  IMEX, and host Backward Euler independently. The complete Task 4 cross-method
-  parameter matrix and whole-model boundary evidence remain pending.
+- Tasks 2 through 4 now exercise repaired current-MAM4xx boundaries at
+  `top_lev=0,1,6`, verify paired aerosol ledger decompositions, gate FE, IMEX,
+  and host Backward Euler independently, and pass the complete common
+  cross-method parameter matrix. Local CPU timing, matched-error analysis, and
+  whole-model boundary evidence remain pending.
 - The `Kokkos::Min` reducer overwrites, rather than incorporates, the
   preassigned `dtmin=dtmicro`. This permits `nsubmix=1` under weak mixing and
   differs from the apparent source-level intent; the numerical and performance
@@ -2369,6 +2399,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-24 | Codex | Synchronized the Task 4 common cross-method gate as built: independent adaptive Dormand--Prince 5(4) physical-RHS oracle, analytic and two-tolerance reference checks, complete 1,875-case Cartesian matrix, per-field errors and diagnostic ledgers, all-method raw-positivity and fail-closed norm gates, three-run bitwise determinism, all-field first-order fits, pairwise Richardson common-solution checks, deterministic CSV/table outputs, and clean debug/sanitizer plus optimized evidence. FE, IMEX, and BE pass Task 4; only the local CPU timing phase is authorized next. |
 | 2026-08-24 | Codex | Synchronized the Task 3 host Backward Euler implementation as built: signed 2-by-2 block rows, exact matrix-family reuse, unsafe-pivot failure, scalar droplet solve after modal-number blocks, independent dense and physical-equation oracles, raw positivity before projection, fail-closed diagnostics, bottom-stencil inspection, analytic first-order convergence, and clean locked-stack debug/sanitizer plus optimized evidence. The method-local gate passes; production physics remains unchanged. |
 | 2026-08-24 | Codex | Synchronized the Task 2 FE/IMEX implementation as built: controller-only substep selection, signed total/clipping/operator ledgers, like-unit independent residuals, explicit roundoff/material classifications, fail-closed diagnostic arithmetic, scaled and zero-ledger tests, three-run bitwise state checks, and the locked current-MAM4xx rank-3 adapter at `top_lev=0,1,6`. Debug/sanitizer and optimized standalone gates pass; production physics remains unchanged. |
 | 2026-08-18 | User / Codex | Replaced disposable `/private/tmp` screening storage with the approved persistent local split: temporary worktrees, dependency checkouts, and builds below `/Users/burr114/e3sm-scratch/`; retained results and provenance below `/Users/burr114/e3sm-results/`. Numerical and production-physics contracts are unchanged. |
