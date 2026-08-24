@@ -1196,6 +1196,37 @@ error at most `max(1e-11,5*nlev*epsilon)`, no material negative, and three
 serial runs with bitwise-identical outputs. Only methods passing their complete
 gate enter performance comparisons.
 
+The Task 4 oracle independently reconstructs pressure-normalized interface
+rates, overlap ratios, activation limiting, constituent-to-mode maps, the
+current-C++ bottom source, and all 51 physical right-hand sides directly from
+`OperatorData`; it does not call `prepare_operator`, an integrator matrix or
+band assembler, or an integrator tendency/source helper. It uses the standard
+Dormand-Prince 5(4) embedded coefficients and an infinity norm of
+`|q_5-q_4|/(atol_j+rtol*max(|q_n|,|q_5|))`. For each transported field `j`,
+`atol_j=rtol*max(max_k|q_j(0)|,1e-30)`. Accepted-step growth is limited to a
+factor of five, rejected-step shrinkage to at least a factor of 0.2, and both
+use a 0.9 safety factor. A run fails on a nonfinite stage, error norm, state,
+step underflow, or more than 100,000 attempted steps. The canonical zero-cloud
+state transition is applied once after the continuous reference advance, so a
+one-call candidate comparison has the same projection boundary; smooth order
+fits use strictly positive clouds and repeated candidate steps without a
+projection discontinuity.
+
+The deterministic common matrix uses ACI interval `0.5 s`; zero, typical, and
+strong interface-rate scales `0`, `0.05`, and `0.5 s^-1`; pressure weights in
+`[0.8,1.2] kg m^-2`; alternating cloud fractions `0.8` and `0.8*r` for the
+declared overlap ratio `r`; and the approved seed `0x4E44524F` for bounded
+state/profile perturbations. Number activation uses mode multipliers
+`0.7,0.8,0.9,1.0`; mass activation uses `0.55,0.65,0.75,0.85`; each multiplier
+is applied to the declared activation strength times the local below rate
+before canonical limiting. Inactive aerosol pairs are exactly zero. The
+controller-only first-level rate is one quarter of the selected mixing scale
+and enters only FE substep selection. These dimensionless-rate products keep
+the common matrix within the method-local positivity domain while still
+exercising the limiter-active category. Task 4 writes one deterministic CSV
+record per case and method plus a Markdown summary; retained outputs belong
+under `/Users/burr114/e3sm-results/ndrop-screening/task4-cross-scheme`.
+
 #### Required local CPU screen
 
 Performance cases cover levels `1,2,3,16,32,64,72,127,128`; active aerosol

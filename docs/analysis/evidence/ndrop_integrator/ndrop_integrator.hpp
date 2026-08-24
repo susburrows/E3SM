@@ -111,6 +111,23 @@ struct AdvanceResult {
   AdvanceDiagnostics diagnostics;
 };
 
+struct ReferenceOptions {
+  // Dimensionless embedded-error tolerance; must be finite and positive.
+  Real relative_tolerance = 1e-12;
+  // Hard fail-closed limit across accepted and rejected adaptive steps.
+  int maximum_attempted_steps = 100000;
+};
+
+struct ReferenceResult {
+  bool ok = false;
+  std::string message;
+  State state;
+  int accepted_steps = 0;
+  int rejected_steps = 0;
+  int function_evaluations = 0;
+  Real maximum_error_ratio = 0;
+};
+
 struct ForwardEulerOptions {
   // A positive value forces this many equal substeps. Zero uses production
   // adaptive subcycling.
@@ -195,6 +212,15 @@ bool backward_euler_probe_is_rejected(BackwardEulerProbe probe);
 std::array<Real, 4>
 backward_euler_bottom_block_for_probe(Real rate_above, Real activation,
                                       Real dt);
+
+// Independently assembled adaptive Dormand-Prince 5(4) physical-RHS oracle.
+// Implemented in ndrop_reference.cpp for the standalone cross-method gate.
+// dt is a positive ACI interval in seconds. Invalid/nonfinite input, derived
+// arithmetic, error control, or zero-cloud postprocessing returns ok=false
+// with the first detected stage in message; no partial result is accepted.
+ReferenceResult advance_reference_dopri54(
+    const State &initial, const OperatorData &data, Real dt,
+    const ReferenceOptions &options = {});
 
 } // namespace ndrop_test
 

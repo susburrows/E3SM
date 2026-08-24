@@ -49,6 +49,18 @@ add_executable(test_backward_euler ndrop_integrator.cpp
 configure_ndrop_target(test_backward_euler)
 add_test(NAME ndrop_backward_euler COMMAND test_backward_euler)
 
+add_executable(test_cross_scheme ndrop_integrator.cpp ndrop_imex.cpp
+               ndrop_backward_euler.cpp ndrop_reference.cpp
+               test_cross_scheme.cpp)
+target_include_directories(
+  test_cross_scheme SYSTEM PRIVATE
+  "${EKAT_SOURCE}/src/algorithm"
+  "${EKAT_SOURCE}/src/core"
+  "${EKAT_SOURCE}/src/kokkos"
+  "${EKAT_SOURCE}/src/pack")
+configure_ndrop_target(test_cross_scheme)
+add_test(NAME ndrop_cross_scheme COMMAND test_cross_scheme)
+
 if(NDROP_BUILD_EXACT_ADAPTER)
   if(NOT EXISTS "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in")
     message(FATAL_ERROR
