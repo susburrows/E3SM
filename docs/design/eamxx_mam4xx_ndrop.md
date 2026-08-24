@@ -62,8 +62,10 @@ below; it does not authorize production implementation.
 > not implemented. The user approved the remediation contract on 2026-07-30.
 >
 > The corrected Forward Euler and IMEX gates passed independent extra-high
-> review on 2026-08-06 at candidate commit `2c4427e`. The standalone Backward
-> Euler gate may now begin; production implementation remains unauthorized.
+> review on 2026-08-06 at candidate commit `2c4427e`. The current locked-stack
+> Backward Euler method-local gate passed on 2026-08-24 at commits
+> `2f43c8c1e4` and `c6f7f18a5d`. Cross-method validation and production
+> implementation remain separate, unauthorized stages.
 
 ### Phase 0 design gate
 
@@ -1148,6 +1150,34 @@ no-flux operator without the controller returns one. The archived
 `1b02f272...` failure remains a separate historical artifact and is not
 registered in the current CTest gate.
 
+#### Task 3 as-built synchronization
+
+The standalone Backward Euler gate was implemented at E3SM harness commits
+`2f43c8c1e4ebd6b97152414ab02dca760bc883e6` and
+`c6f7f18a5d58e118cf4146a790fe69895a1c4adb`. It orders each aerosol level as
+`(C,I)`, assembles the approved signed `L`, `B`, and `U` blocks, factors each
+distinct activation matrix family once with a host 2-by-2 block Thomas solve,
+and then advances droplets with one scalar cloud matrix using sources from the
+solved modal-number state. The first-level FE controller is reported but does
+not enter any BE matrix, source, residual, or ledger.
+
+Unsafe scalar pivots fail at `100*epsilon*||A||_infinity`. The solver reports
+matrix and independently assembled physical residuals, per-field raw minima,
+roundoff/material negative classifications, exact factorization and right-hand-
+side counts, and signed total/clipping/operator ledger changes. Positivity is
+checked before the common zero-cloud projection; clipping is never applied.
+Nonfinite inputs, matrices, right-hand sides, solutions, branch diagnostics,
+residuals, and ledger arithmetic fail at the detected stage.
+
+The committed dense oracle independently assembles a `2*n` matrix directly
+from the physical equations and solves it with scalar partial pivoting. It does
+not reuse BE bands, factorization, source-mapping helpers, or the block solver.
+The canonical no-flux limiter makes the admissible bottom activation rate zero,
+so a test-only inspection separately verifies the retained nonzero bottom block
+`[[lambda-ha,-ha],[ha,lambda+ha]]` and the positive bottom droplet source.
+Changing that source branch remains a deterministic failure. Debug/ASan/UBSan
+and optimized gates pass; no production source, interface, or gitlink changed.
+
 #### Required numerical matrix and gates
 
 The accuracy gate covers level counts `1,2,3,127,128`; overlap values
@@ -1278,10 +1308,11 @@ all be assembled from these same interface data and overlap factors. This
 prevents a standalone test from accidentally constructing a nonconservative
 operator. An input that supplies incompatible cell rates must fail validation.
 
-The harness must not reproduce the known `eddy_diff(-1)` access.
-Exact-current-function comparison is restricted to a safe active range such
-as `top_lev=1`; successful isolated tests must not be reported as validation of
-the defective production `top_lev=0` path.
+The harness must not reproduce the historical `eddy_diff(-1)` access. Current
+exact-function comparison uses the locked repaired MAM4xx revision at
+`top_lev=0,1,6`; only the archived affected revision remains restricted to a
+safe active range such as `top_lev=1`. Passing repaired-current tests must not
+be reported as retroactive validation of the archived defective path.
 
 ### Test-only interface
 
@@ -1514,10 +1545,10 @@ roughly double the solve work and do not guarantee positivity.
 
 Higher formal order inside `ndrop` may not increase whole-model order if
 frozen coefficients or outer ACI/process splitting dominate the error. The
-decision sequence is therefore: finish and validate Backward Euler, compare
-its damping and matched-error cost with FE and IMEX, and add SDIRK2/ESDIRK2 or
-TR-BDF2 only if the evidence shows that a higher-order implicit method is
-needed. RK4 remains outside the planned screening suite.
+decision sequence is therefore: complete the common cross-method accuracy
+matrix, compare BE damping and matched-error cost with FE and IMEX, and add
+SDIRK2/ESDIRK2 or TR-BDF2 only if the evidence shows that a higher-order
+implicit method is needed. RK4 remains outside the planned screening suite.
 
 ### Algebraic invariants
 
@@ -1626,8 +1657,9 @@ finite-checker tests. The corrected candidate includes those cases and passed
 all three registered executables in sanitizer/debug and optimized builds. A
 fresh independent extra-high review reran the suites, exercised mode and matrix
 mutations plus independent hand calculations, and assigned strict `PASS`
-decisions to both gates. Backward Euler has not begun. Executed evidence is
-recorded in
+decisions to both gates. The current locked-stack Backward Euler method-local
+gate subsequently passed in debug/sanitizer and optimized configurations on
+2026-08-24. Executed evidence is recorded in
 [`docs/analysis/evidence/ndrop_integrator/README.md`](../analysis/evidence/ndrop_integrator/README.md).
 
 ### Accuracy and convergence validation
@@ -1863,7 +1895,7 @@ The principal alternatives and their present status are:
 |---|---|---|---|---|
 | Current subcycled Forward Euler | Exact production behavior; very low overhead when `nsubmix` is one; repeated short steps can resolve the frozen operator accurately | Stability requires many sequential vertical passes in strong mixing; work varies by column; clipping can alter aerosol ledgers | Many fields can run in parallel, but levels and substeps are sequential and high-`nsubmix` columns create a long tail | Standalone gate passed independent review at the tested boundaries; no new production or GPU timing |
 | IMEX-Euler | Removes the explicit mixing stability restriction; uses two shared scalar tridiagonal matrix families with many right-hand sides; fixed work per call | Explicit activation is lagged over the ACI interval; raw positivity can fail; solve overhead can exceed FE for `nsubmix` of one or two; first-order | EKAT cyclic reduction can expose parallelism within each column and across fields/columns | Standalone gate passed independent review; no production implementation or GPU timing |
-| Fully implicit Backward Euler | Removes the mixing restriction and evaluates activation transfer at the new state; likely more robust when explicit-source lag matters | Requires custom 2-by-2 block-tridiagonal solves; more flops and workspace; first-order stiff damping can reduce accuracy; positivity is not guaranteed | Fixed work, but the coupled block solver is not supplied by the current EKAT scalar interface | Initial design gate approved; standalone implementation and validation remain separate work |
+| Fully implicit Backward Euler | Removes the mixing restriction and evaluates activation transfer at the new state; likely more robust when explicit-source lag matters | Requires custom 2-by-2 block-tridiagonal solves; more flops and workspace; first-order stiff damping can reduce accuracy; positivity is not guaranteed | Fixed work, but the coupled block solver is not supplied by the current EKAT scalar interface | Standalone host method-local gate passed; common Task 4 comparison, production implementation, and GPU timing remain separate work |
 | Hybrid FE/IMEX | Retains the cheap FE path for low-`nsubmix` columns and targets IMEX at the expensive tail | Requires classification/batching or compaction, a threshold policy, two maintained paths, and validation at the switch boundary | Potentially best production GPU balance if high-`nsubmix` columns can be batched efficiently | Provisional concept only; requires profiling and a separate design gate |
 
 The provisional GPU ranking is hybrid FE/IMEX if high-`nsubmix` columns can be
@@ -2273,10 +2305,10 @@ current run matrix.
 - Validation at the older evidence revision initialized both alternating work
   arrays and therefore cannot by itself establish the safety of that historical
   partial-disable path.
-- Task 2 now exercises repaired current-MAM4xx boundaries at `top_lev=0,1,6`
-  and verifies paired aerosol ledger decompositions. The complete Task 4
-  cross-method parameter matrix and whole-model boundary evidence remain
-  pending.
+- Tasks 2 and 3 now exercise repaired current-MAM4xx boundaries at
+  `top_lev=0,1,6`, verify paired aerosol ledger decompositions, and gate FE,
+  IMEX, and host Backward Euler independently. The complete Task 4 cross-method
+  parameter matrix and whole-model boundary evidence remain pending.
 - The `Kokkos::Min` reducer overwrites, rather than incorporates, the
   preassigned `dtmin=dtmicro`. This permits `nsubmix=1` under weak mixing and
   differs from the apparent source-level intent; the numerical and performance
@@ -2306,6 +2338,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-24 | Codex | Synchronized the Task 3 host Backward Euler implementation as built: signed 2-by-2 block rows, exact matrix-family reuse, unsafe-pivot failure, scalar droplet solve after modal-number blocks, independent dense and physical-equation oracles, raw positivity before projection, fail-closed diagnostics, bottom-stencil inspection, analytic first-order convergence, and clean locked-stack debug/sanitizer plus optimized evidence. The method-local gate passes; production physics remains unchanged. |
 | 2026-08-24 | Codex | Synchronized the Task 2 FE/IMEX implementation as built: controller-only substep selection, signed total/clipping/operator ledgers, like-unit independent residuals, explicit roundoff/material classifications, fail-closed diagnostic arithmetic, scaled and zero-ledger tests, three-run bitwise state checks, and the locked current-MAM4xx rank-3 adapter at `top_lev=0,1,6`. Debug/sanitizer and optimized standalone gates pass; production physics remains unchanged. |
 | 2026-08-18 | User / Codex | Replaced disposable `/private/tmp` screening storage with the approved persistent local split: temporary worktrees, dependency checkouts, and builds below `/Users/burr114/e3sm-scratch/`; retained results and provenance below `/Users/burr114/e3sm-results/`. Numerical and production-physics contracts are unchanged. |
 | 2026-08-18 | User / Codex | Approved and froze the standalone cross-method screening contract: current and archived dependency revisions, controller-only first-active-level FE rate, signed no-flux IMEX and BE rows, block-Thomas and independent dense-oracle rules, diagnostic decompositions, matrix-family reuse, complete numerical and performance grids, acceptance thresholds, and test-only scope. Production physics remains unchanged. |

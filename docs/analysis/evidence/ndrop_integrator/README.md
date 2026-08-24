@@ -72,7 +72,8 @@ ctest --test-dir /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
 Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
 `-DNDROP_ENABLE_SANITIZERS=OFF` for the optimized gate. The checked-in
 `CMakeLists.txt` applies warnings-as-errors to all harness sources and registers
-the Forward Euler, IMEX, and exact-current executables with CTest.
+the Forward Euler, IMEX, Backward Euler, and exact-current executables with
+CTest.
 
 The current adapter validates the repaired current-MAM4xx `top_lev=0` path.
 The archived `1b02f272...` `top_lev=0` expected failure and its historical
@@ -153,6 +154,34 @@ reran both configurations, inspected the equations and durable tests, and used
 reviewer-only mode, matrix, clipping, and hand-solve checks. It assigned strict
 `PASS` decisions to both the Forward Euler and IMEX gates. The complete review
 is retained in `independent_review_20260806.md`.
+
+### Executed Backward Euler gate: 2026-08-24
+
+Task 3 implemented the host-only Backward Euler gate at code/test commits
+`2f43c8c1e4` and `c6f7f18a5d` using the current lock manifest. The final
+debug build with ASan/UBSan and optimized release build each passed all four
+registered CTest executables. Backward Euler passed 23,165 checks in each
+configuration; the unchanged FE, IMEX, and current-MAM4xx adapter gates also
+passed.
+
+The BE suite checks the signed 2-by-2 block stencil against a separately
+assembled dense partial-pivoting oracle, verifies exact matrix-family reuse,
+tests unsafe block and scalar pivots, covers small and L128-like columns from
+zero through full overlap and typical through strong mixing, and exercises
+activation strengths, active-field counts, ledger conservation, raw
+positivity, reset/resuspension, scaling, fail-closed arithmetic, and three-run
+bitwise state determinism. Analytic diffusion and activation cases both meet
+the approved first-order slope and `R^2` gates. A test-only inspection verifies
+the retained nonzero bottom activation block and positive bottom droplet source
+because the canonical no-flux limiter reduces the admissible bottom rate to
+zero.
+
+The detailed equation audit, TDD record, results, hashes, limitations, and
+method-local `PASS` decision are in
+`backward_euler_gate_review_20260824.md`. Retained verbose logs and provenance
+are below
+`/Users/burr114/e3sm-results/ndrop-screening/task3-backward-euler` and
+`/Users/burr114/e3sm-results/ndrop-screening/provenance`.
 
 ### Executed results: 2026-08-24 current locked stack
 
