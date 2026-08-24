@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -75,6 +76,24 @@ State make_state(const std::size_t nlev, const bool uniform = false) {
     }
   }
   return state;
+}
+
+bool state_bitwise_equal(const State &lhs, const State &rhs) {
+  if (lhs.nlev() != rhs.nlev() ||
+      std::memcmp(lhs.droplet_number.data(), rhs.droplet_number.data(),
+                  lhs.nlev() * sizeof(Real)) != 0) {
+    return false;
+  }
+  for (int j = 0; j < num_constituents; ++j) {
+    if (std::memcmp(lhs.interstitial[j].data(),
+                    rhs.interstitial[j].data(),
+                    lhs.nlev() * sizeof(Real)) != 0 ||
+        std::memcmp(lhs.cloudborne[j].data(), rhs.cloudborne[j].data(),
+                    lhs.nlev() * sizeof(Real)) != 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 OperatorData make_operator(const std::size_t nlev, const Real exchange,
@@ -238,6 +257,25 @@ void test_randomized_compatible_columns() {
       check_ledgers(result, "random compatible");
     }
   }
+}
+
+void test_serial_bitwise_determinism() {
+  State state = make_state(128);
+  OperatorData op = make_operator(128, 0.8, 0.002, true);
+  const std::array<AdvanceResult, 3> results = {
+      ndrop_test::advance_imex(state, op, 0.25),
+      ndrop_test::advance_imex(state, op, 0.25),
+      ndrop_test::advance_imex(state, op, 0.25)};
+  check(results[0].ok && results[1].ok && results[2].ok,
+        "three serial IMEX determinism advances succeed");
+  check(state_bitwise_equal(results[0].state, results[1].state) &&
+            state_bitwise_equal(results[1].state, results[2].state),
+        "three serial IMEX output states are bitwise identical");
+  check(results[0].diagnostics.normalized_residual ==
+                results[1].diagnostics.normalized_residual &&
+            results[1].diagnostics.normalized_residual ==
+                results[2].diagnostics.normalized_residual,
+        "three serial IMEX residual outputs are identical");
 }
 
 struct ErrorPair {
@@ -902,6 +940,7 @@ int main(int argc, char **argv) {
     test_identity_level_counts();
     test_uniform_and_fractional_ledgers();
     test_randomized_compatible_columns();
+    test_serial_bitwise_determinism();
     test_diffusion_convergence();
     test_activation_convergence();
     test_activation_limiter_oracle();

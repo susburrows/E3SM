@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
@@ -109,6 +110,24 @@ void check_state_equal(const State &actual, const State &expected,
             label + " cloudborne");
     }
   }
+}
+
+bool state_bitwise_equal(const State &lhs, const State &rhs) {
+  if (lhs.nlev() != rhs.nlev() ||
+      std::memcmp(lhs.droplet_number.data(), rhs.droplet_number.data(),
+                  lhs.nlev() * sizeof(Real)) != 0) {
+    return false;
+  }
+  for (int j = 0; j < num_constituents; ++j) {
+    if (std::memcmp(lhs.interstitial[j].data(),
+                    rhs.interstitial[j].data(),
+                    lhs.nlev() * sizeof(Real)) != 0 ||
+        std::memcmp(lhs.cloudborne[j].data(), rhs.cloudborne[j].data(),
+                    lhs.nlev() * sizeof(Real)) != 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 void check_ledgers(const AdvanceResult &result, const std::string &label) {
@@ -297,6 +316,28 @@ void test_first_level_controller_is_not_physical_flux() {
         "forced controller comparison succeeds");
   check_state_equal(forced_controlled.state, forced_physical.state,
                     "controller never enters physical FE tendency");
+}
+
+void test_serial_bitwise_determinism() {
+  State state = make_state(128);
+  OperatorData op = make_operator(128, 0.8, 0.02, 0.9);
+  for (std::size_t k = 0; k < op.nlev(); ++k) {
+    op.cloud_fraction[k] =
+        k % 5 == 0 ? Real(0) : Real(0.2 + 0.2 * (k % 4));
+  }
+  const std::array<AdvanceResult, 3> results = {
+      ndrop_test::advance_forward_euler(state, op, 1.25),
+      ndrop_test::advance_forward_euler(state, op, 1.25),
+      ndrop_test::advance_forward_euler(state, op, 1.25)};
+  check(results[0].ok && results[1].ok && results[2].ok,
+        "three serial FE determinism advances succeed");
+  check(state_bitwise_equal(results[0].state, results[1].state) &&
+            state_bitwise_equal(results[1].state, results[2].state),
+        "three serial FE output states are bitwise identical");
+  check(results[0].diagnostics.nsubmix == results[1].diagnostics.nsubmix &&
+            results[1].diagnostics.nsubmix ==
+                results[2].diagnostics.nsubmix,
+        "three serial FE controller outputs are identical");
 }
 
 void test_fractional_overlap_ledger() {
@@ -948,6 +989,7 @@ int main() {
     test_uniform_full_overlap();
     test_substeps_limiter_and_parity();
     test_first_level_controller_is_not_physical_flux();
+    test_serial_bitwise_determinism();
     test_fractional_overlap_ledger();
     test_adaptive_subcycling_avoids_clipping();
     test_forced_step_clipping_accounting();
