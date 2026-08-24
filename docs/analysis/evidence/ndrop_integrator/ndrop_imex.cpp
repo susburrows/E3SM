@@ -177,8 +177,7 @@ bool update_physical_residual(const std::vector<Real> &old,
     }
     Real value_scale =
         std::max({std::abs(old[k]), std::abs(solution[k]),
-                  std::abs(source[k]), std::abs(solution[km1]),
-                  std::abs(solution[kp1])});
+                  std::abs(solution[km1]), std::abs(solution[kp1])});
     if (interstitial) {
       value_scale =
           std::max({value_scale, std::abs((*cloudborne)[km1]),
@@ -188,7 +187,7 @@ bool update_physical_residual(const std::vector<Real> &old,
       continue;
     }
     const Real coefficient_scale =
-        std::max({Real(1), std::abs(dt), std::abs(dt_rate_above),
+        std::max({Real(1), std::abs(dt_rate_above),
                   std::abs(dt_rate_below)});
     const Real scaled_current = solution[k] / value_scale;
     Real residual =
@@ -241,17 +240,27 @@ bool update_physical_residual(const std::vector<Real> &old,
   return std::isfinite(overall_max);
 }
 
-bool normalized_ledger_error(const Real initial, const Real final,
+bool normalized_ledger_delta(const Real initial, const Real delta,
                              Real &normalized) {
   const Real scale = std::abs(initial);
-  normalized = scale > 0 ? std::abs(final / scale - initial / scale)
-                         : std::abs(final);
+  normalized = scale > 0 ? std::abs(delta) / scale : std::abs(delta);
   return std::isfinite(normalized);
+}
+
+bool checked_difference(const Real lhs, const Real rhs, Real &difference) {
+  const Real maximum = std::numeric_limits<Real>::max();
+  if ((rhs > 0 && lhs < -maximum + rhs) ||
+      (rhs < 0 && lhs > maximum + rhs)) {
+    return false;
+  }
+  difference = lhs - rhs;
+  return std::isfinite(difference);
 }
 
 void update_positivity(const std::vector<Real> &initial,
                        const std::vector<Real> &solution,
-                       AdvanceDiagnostics &diagnostics) {
+                       AdvanceDiagnostics &diagnostics,
+                       int &roundoff_count, int &material_count) {
   Real scale = 0;
   for (const Real value : initial) {
     scale = std::max(scale, std::abs(value));
@@ -267,7 +276,12 @@ void update_positivity(const std::vector<Real> &initial,
     if (value < 0) {
       ++diagnostics.negative_count;
       if (-value > threshold) {
+        ++diagnostics.material_negative_count;
+        ++material_count;
         diagnostics.positivity_failure = true;
+      } else {
+        ++diagnostics.roundoff_negative_count;
+        ++roundoff_count;
       }
     }
   }
@@ -294,6 +308,8 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
       op.activation_limiter_count;
   result.diagnostics.max_inverse_mixing_time =
       op.max_inverse_mixing_time;
+  result.diagnostics.first_level_controller_rate =
+      op.first_level_controller_rate;
   if (!checked_column_ledgers(initial, op.pressure_weight,
                               result.diagnostics.initial_ledger,
                               result.message)) {
@@ -397,12 +413,22 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
   }
 
   update_positivity(initial.droplet_number, result.state.droplet_number,
-                    result.diagnostics);
+                    result.diagnostics,
+                    result.diagnostics.droplet_roundoff_negative_count,
+                    result.diagnostics.droplet_material_negative_count);
   for (int j = 0; j < num_constituents; ++j) {
     update_positivity(initial.interstitial[j],
-                      result.state.interstitial[j], result.diagnostics);
+                      result.state.interstitial[j], result.diagnostics,
+                      result.diagnostics.field_clipping[j]
+                          .interstitial_roundoff_negative_count,
+                      result.diagnostics.field_clipping[j]
+                          .interstitial_material_negative_count);
     update_positivity(initial.cloudborne[j], result.state.cloudborne[j],
-                      result.diagnostics);
+                      result.diagnostics,
+                      result.diagnostics.field_clipping[j]
+                          .cloudborne_roundoff_negative_count,
+                      result.diagnostics.field_clipping[j]
+                          .cloudborne_material_negative_count);
   }
 
   Real physical_residual = 0;
@@ -446,10 +472,22 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     return result;
   }
   for (int j = 0; j < num_constituents; ++j) {
+    Real total_delta = 0;
+    Real operator_delta = 0;
+    if (!checked_difference(result.diagnostics.final_ledger[j],
+                            result.diagnostics.initial_ledger[j],
+                            total_delta) ||
+        !checked_difference(total_delta,
+                            result.diagnostics.clipping_ledger_delta[j],
+                            operator_delta)) {
+      result.message = "IMEX aerosol ledger decomposition is nonfinite";
+      return result;
+    }
+    result.diagnostics.total_ledger_delta[j] = total_delta;
+    result.diagnostics.operator_ledger_delta[j] = operator_delta;
     Real normalized = 0;
-    if (!normalized_ledger_error(result.diagnostics.initial_ledger[j],
-                                 result.diagnostics.final_ledger[j],
-                                 normalized)) {
+    if (!normalized_ledger_delta(result.diagnostics.initial_ledger[j],
+                                 operator_delta, normalized)) {
       result.message = "IMEX aerosol ledger normalization is nonfinite";
       return result;
     }
@@ -506,9 +544,15 @@ bool imex_nonfinite_probe_is_rejected(const ImexFiniteProbe probe) {
   }
   case ImexFiniteProbe::ledger_normalization: {
     Real normalized = 0;
-    return !normalized_ledger_error(std::numeric_limits<Real>::denorm_min(),
+    return !normalized_ledger_delta(std::numeric_limits<Real>::denorm_min(),
                                     std::numeric_limits<Real>::max(),
                                     normalized);
+  }
+  case ImexFiniteProbe::ledger_decomposition: {
+    Real difference = 0;
+    return !checked_difference(std::numeric_limits<Real>::max(),
+                               -std::numeric_limits<Real>::max(),
+                               difference);
   }
   }
   return false;

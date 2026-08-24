@@ -7,10 +7,10 @@ find_package(Kokkos CONFIG REQUIRED)
 
 get_filename_component(E3SM_SOURCE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../.."
                        ABSOLUTE)
-set(EKAT_SOURCE "${E3SM_SOURCE_ROOT}/externals/ekat")
-set(MAM4XX_SOURCE "${E3SM_SOURCE_ROOT}/externals/mam4xx")
-set(HAERO_SOURCE "${E3SM_SOURCE_ROOT}/externals/haero" CACHE PATH
-    "Path to the Haero source checkout")
+set(EKAT_SOURCE "${E3SM_SOURCE_ROOT}/externals/ekat" CACHE PATH
+    "Path to the locked EKAT source checkout")
+set(MAM4XX_SOURCE "${E3SM_SOURCE_ROOT}/externals/mam4xx" CACHE PATH
+    "Path to the locked MAM4xx source checkout")
 
 option(NDROP_ENABLE_SANITIZERS "Enable AddressSanitizer and UBSan" OFF)
 option(NDROP_BUILD_EXACT_ADAPTER
@@ -45,36 +45,29 @@ configure_ndrop_target(test_imex)
 add_test(NAME ndrop_imex COMMAND test_imex)
 
 if(NDROP_BUILD_EXACT_ADAPTER)
-  if(NOT EXISTS "${HAERO_SOURCE}/haero/haero_config.hpp.in")
+  if(NOT EXISTS "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in")
     message(FATAL_ERROR
-            "Haero source not found at ${HAERO_SOURCE}; initialize the "
-            "submodule or set -DHAERO_SOURCE=/path/to/haero")
+            "Current MAM4xx source not found at ${MAM4XX_SOURCE}; prepare "
+            "the locked stack or set -DMAM4XX_SOURCE=/path/to/mam4xx")
   endif()
 
-  set(HAERO_REAL_TYPE double)
-  set(HAERO_DOUBLE_PRECISION 1)
-  set(HAERO_ENABLE_GPU OFF)
-  file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/haero")
-  configure_file(
-    "${HAERO_SOURCE}/haero/haero_config.hpp.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/haero/haero_config.hpp")
-
-  set(NUM_VERTICAL_LEVELS 128)
+  set(MAM4XX_REAL_TYPE double)
+  set(MAM4XX_DOUBLE_PRECISION 1)
+  set(MAM4XX_ENABLE_GPU OFF)
+  set(MAM4XX_NUM_VERTICAL_LEVELS 128)
   file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated/mam4xx")
   configure_file(
-    "${MAM4XX_SOURCE}/src/mam4xx/aero_config.hpp.in"
-    "${CMAKE_CURRENT_BINARY_DIR}/generated/mam4xx/aero_config.hpp")
+    "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/mam4xx/mam4_config.hpp"
+    @ONLY)
 
   add_executable(compare_mam4xx_forward_euler
                  ndrop_integrator.cpp compare_mam4xx_forward_euler.cpp)
-  target_compile_definitions(compare_mam4xx_forward_euler
-                             PRIVATE NUM_VERTICAL_LEVELS=128)
   target_include_directories(compare_mam4xx_forward_euler
                              PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_include_directories(
     compare_mam4xx_forward_euler SYSTEM PRIVATE
     "${MAM4XX_SOURCE}/src"
-    "${HAERO_SOURCE}"
     "${EKAT_SOURCE}/src/algorithm"
     "${EKAT_SOURCE}/src/core"
     "${EKAT_SOURCE}/src/kokkos"

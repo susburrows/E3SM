@@ -83,6 +83,122 @@ bool clipped_value(const Real raw, const Real weight, Real &weighted_deficit,
   return true;
 }
 
+void classify_negative_values(const std::vector<Real> &previous,
+                              const std::vector<Real> &raw,
+                              AdvanceDiagnostics &diagnostics,
+                              int &roundoff_count, int &material_count) {
+  Real scale = 0;
+  for (const Real value : previous) {
+    scale = std::max(scale, std::abs(value));
+  }
+  for (const Real value : raw) {
+    scale = std::max(scale, std::abs(value));
+  }
+  const Real threshold =
+      10 * std::numeric_limits<Real>::epsilon() * scale;
+  for (const Real value : raw) {
+    if (value >= 0) {
+      continue;
+    }
+    ++diagnostics.negative_count;
+    if (-value > threshold) {
+      ++diagnostics.material_negative_count;
+      ++material_count;
+    } else {
+      ++diagnostics.roundoff_negative_count;
+      ++roundoff_count;
+    }
+  }
+}
+
+bool update_explicit_physical_residual(
+    const std::vector<Real> &old, const std::vector<Real> &raw,
+    const std::vector<Real> &source, const PreparedOperator &op,
+    const Real dt, const bool interstitial,
+    const std::vector<Real> *cloudborne, Real &overall_max) {
+  Real residual_max = 0;
+  Real scale_max = 0;
+  for (std::size_t k = 0; k < op.nlev(); ++k) {
+    const std::size_t km1 = k == 0 ? 0 : k - 1;
+    const std::size_t kp1 = std::min(k + 1, op.nlev() - 1);
+    const Real dt_rate_above = dt * op.rate_above[k];
+    const Real dt_rate_below = dt * op.rate_below[k];
+    if (!std::isfinite(dt_rate_above) || !std::isfinite(dt_rate_below)) {
+      return false;
+    }
+    Real value_scale =
+        std::max({std::abs(old[k]), std::abs(raw[k]),
+                  std::abs(old[km1]), std::abs(old[kp1])});
+    if (interstitial) {
+      value_scale =
+          std::max({value_scale, std::abs((*cloudborne)[km1]),
+                    std::abs((*cloudborne)[kp1])});
+    }
+    if (value_scale == 0) {
+      if (source[k] != 0) {
+        return false;
+      }
+      continue;
+    }
+    const Real coefficient_scale =
+        std::max({Real(1), std::abs(dt_rate_above),
+                  std::abs(dt_rate_below)});
+    const Real scaled_current = raw[k] / value_scale;
+    Real residual =
+        scaled_current / coefficient_scale -
+        (old[k] / value_scale) / coefficient_scale;
+    Real scale = std::abs(scaled_current / coefficient_scale) +
+                 std::abs((old[k] / value_scale) / coefficient_scale);
+    const Real source_term =
+        (dt / coefficient_scale) * (source[k] / value_scale) *
+        (interstitial ? -1 : 1);
+    residual -= source_term;
+    scale += std::abs(source_term);
+
+    Real below_bracket = old[kp1] / value_scale - old[k] / value_scale;
+    Real above_bracket = old[km1] / value_scale - old[k] / value_scale;
+    if (interstitial) {
+      below_bracket += ((*cloudborne)[kp1] / value_scale) *
+                       (1 - op.overlap_below[k]);
+      above_bracket += ((*cloudborne)[km1] / value_scale) *
+                       (1 - op.overlap_above[k]);
+    } else {
+      below_bracket =
+          op.overlap_below[k] * (old[kp1] / value_scale) -
+          old[k] / value_scale;
+      above_bracket =
+          op.overlap_above[k] * (old[km1] / value_scale) -
+          old[k] / value_scale;
+    }
+    const Real below_term =
+        (dt_rate_below / coefficient_scale) * below_bracket;
+    const Real above_term =
+        (dt_rate_above / coefficient_scale) * above_bracket;
+    residual -= below_term + above_term;
+    scale += std::abs(below_term) + std::abs(above_term);
+    residual = std::abs(residual);
+    if (!std::isfinite(residual) || !std::isfinite(scale)) {
+      return false;
+    }
+    residual_max = std::max(residual_max, residual);
+    scale_max = std::max(scale_max, scale);
+  }
+  const Real normalized =
+      scale_max > 0 ? residual_max / scale_max : residual_max;
+  if (!std::isfinite(normalized)) {
+    return false;
+  }
+  overall_max = std::max(overall_max, normalized);
+  return std::isfinite(overall_max);
+}
+
+bool normalized_ledger_delta(const Real initial, const Real delta,
+                             Real &normalized) {
+  const Real scale = std::abs(initial);
+  normalized = scale > 0 ? std::abs(delta) / scale : std::abs(delta);
+  return std::isfinite(normalized);
+}
+
 Real cloud_raw(const std::vector<Real> &old, const std::vector<Real> &source,
                const PreparedOperator &op, const std::size_t k,
                const Real dt) {
@@ -150,7 +266,8 @@ bool finite_prepared_operator(const PreparedOperator &op) {
   if (!finite_values(op.pressure_weight) || !finite_values(op.rate_below) ||
       !finite_values(op.rate_above) || !finite_values(op.overlap_below) ||
       !finite_values(op.overlap_above) ||
-      !std::isfinite(op.max_inverse_mixing_time)) {
+      !std::isfinite(op.max_inverse_mixing_time) ||
+      !std::isfinite(op.first_level_controller_rate)) {
     return false;
   }
   for (int mode = 0; mode < num_modes; ++mode) {
@@ -304,6 +421,11 @@ bool validate(const State &state, const OperatorData &data, const Real dt,
     message = "top and bottom interface exchange coefficients must be zero";
     return false;
   }
+  if (!std::isfinite(data.first_level_controller_rate) ||
+      data.first_level_controller_rate < 0) {
+    message = "first-level controller rate must be finite and nonnegative";
+    return false;
+  }
   for (const Real cloud : data.cloud_fraction) {
     if (!std::isfinite(cloud) || cloud < 0 || cloud > 1) {
       message = "cloud fractions must be finite and in [0,1]";
@@ -336,6 +458,7 @@ PreparedOperator prepare_operator(const OperatorData &data) {
   op.overlap_above.assign(nlev, 1);
   op.number_activation_rate = data.number_activation_rate;
   op.mass_activation_rate = data.mass_activation_rate;
+  op.first_level_controller_rate = data.first_level_controller_rate;
 
   for (std::size_t k = 0; k < nlev; ++k) {
     op.rate_above[k] = data.interface_exchange[k] / data.pressure_weight[k];
@@ -353,9 +476,11 @@ PreparedOperator prepare_operator(const OperatorData &data) {
             ? std::min(data.cloud_fraction[k] / data.cloud_fraction[km1],
                        Real(1))
             : Real(1);
+    const Real controller_rate =
+        k == 0 ? op.first_level_controller_rate : Real(0);
     op.max_inverse_mixing_time =
         std::max(op.max_inverse_mixing_time,
-                 op.rate_below[k] + op.rate_above[k]);
+                 op.rate_below[k] + op.rate_above[k] + controller_rate);
 
     for (int mode = 0; mode < num_modes; ++mode) {
       if (op.number_activation_rate[mode][k] > op.rate_below[k]) {
@@ -374,7 +499,10 @@ PreparedOperator prepare_operator(const OperatorData &data) {
 int production_nsubmix(const PreparedOperator &op, const Real dt) {
   Real minimum_timescale = std::numeric_limits<Real>::max();
   for (std::size_t k = 0; k < op.nlev(); ++k) {
-    const Real inverse_time = op.rate_below[k] + op.rate_above[k];
+    const Real controller_rate =
+        k == 0 ? op.first_level_controller_rate : Real(0);
+    const Real inverse_time =
+        op.rate_below[k] + op.rate_above[k] + controller_rate;
     if (inverse_time > mixing_rate_threshold) {
       minimum_timescale =
           std::min(minimum_timescale, Real(1) / inverse_time);
@@ -490,6 +618,8 @@ AdvanceResult advance_forward_euler(const State &initial,
       op.activation_limiter_count;
   result.diagnostics.max_inverse_mixing_time =
       op.max_inverse_mixing_time;
+  result.diagnostics.first_level_controller_rate =
+      op.first_level_controller_rate;
   if (!checked_column_ledgers(initial, op.pressure_weight,
                               result.diagnostics.initial_ledger,
                               result.message)) {
@@ -521,9 +651,28 @@ AdvanceResult advance_forward_euler(const State &initial,
       }
     }
 
+    std::vector<Real> raw_droplet(initial.nlev(), 0);
     for (std::size_t k = 0; k < initial.nlev(); ++k) {
-      const Real raw =
+      raw_droplet[k] =
           cloud_raw(old.droplet_number, nc_source, op, k, substep);
+    }
+    if (!finite_values(raw_droplet)) {
+      result.message = "Forward Euler update produced a nonfinite value";
+      return result;
+    }
+    if (!update_explicit_physical_residual(
+            old.droplet_number, raw_droplet, nc_source, op, substep,
+            false, nullptr,
+            result.diagnostics.normalized_physical_residual)) {
+      result.message = "Forward Euler physical residual is nonfinite";
+      return result;
+    }
+    classify_negative_values(
+        old.droplet_number, raw_droplet, result.diagnostics,
+        result.diagnostics.droplet_roundoff_negative_count,
+        result.diagnostics.droplet_material_negative_count);
+    for (std::size_t k = 0; k < initial.nlev(); ++k) {
+      const Real raw = raw_droplet[k];
       if (options.apply_clipping) {
         if (!clipped_value(
                 raw, op.pressure_weight[k],
@@ -544,20 +693,47 @@ AdvanceResult advance_forward_euler(const State &initial,
 
     for (int j = 0; j < num_constituents; ++j) {
       auto &field_diag = result.diagnostics.field_clipping[j];
+      std::vector<Real> raw_cloud(initial.nlev(), 0);
+      std::vector<Real> raw_interstitial(initial.nlev(), 0);
       for (std::size_t k = 0; k < initial.nlev(); ++k) {
-        const Real raw_cloud =
+        raw_cloud[k] =
             cloud_raw(old.cloudborne[j], sources[j], op, k, substep);
-        const Real raw_interstitial =
+        raw_interstitial[k] =
             interstitial_raw(old.interstitial[j], old.cloudborne[j],
                              sources[j], op, k, substep);
+      }
+      if (!finite_values(raw_cloud) || !finite_values(raw_interstitial)) {
+        result.message = "Forward Euler update produced a nonfinite value";
+        return result;
+      }
+      if (!update_explicit_physical_residual(
+              old.cloudborne[j], raw_cloud, sources[j], op, substep,
+              false, nullptr,
+              result.diagnostics.normalized_physical_residual) ||
+          !update_explicit_physical_residual(
+              old.interstitial[j], raw_interstitial, sources[j], op,
+              substep, true, &old.cloudborne[j],
+              result.diagnostics.normalized_physical_residual)) {
+        result.message = "Forward Euler physical residual is nonfinite";
+        return result;
+      }
+      classify_negative_values(
+          old.cloudborne[j], raw_cloud, result.diagnostics,
+          field_diag.cloudborne_roundoff_negative_count,
+          field_diag.cloudborne_material_negative_count);
+      classify_negative_values(
+          old.interstitial[j], raw_interstitial, result.diagnostics,
+          field_diag.interstitial_roundoff_negative_count,
+          field_diag.interstitial_material_negative_count);
+      for (std::size_t k = 0; k < initial.nlev(); ++k) {
         if (options.apply_clipping) {
-          if (!clipped_value(raw_cloud, op.pressure_weight[k],
+          if (!clipped_value(raw_cloud[k], op.pressure_weight[k],
                              field_diag.cloudborne_weighted_deficit,
                              field_diag.cloudborne_count,
                              field_diag.cloudborne_raw_minimum,
                              result.diagnostics, next.cloudborne[j][k],
                              result.message) ||
-              !clipped_value(raw_interstitial, op.pressure_weight[k],
+              !clipped_value(raw_interstitial[k], op.pressure_weight[k],
                              field_diag.interstitial_weighted_deficit,
                              field_diag.interstitial_count,
                              field_diag.interstitial_raw_minimum,
@@ -566,16 +742,16 @@ AdvanceResult advance_forward_euler(const State &initial,
             return result;
           }
         } else {
-          if (!record_raw_value(raw_cloud,
+          if (!record_raw_value(raw_cloud[k],
                                 field_diag.cloudborne_raw_minimum,
                                 result.diagnostics, result.message) ||
-              !record_raw_value(raw_interstitial,
+              !record_raw_value(raw_interstitial[k],
                                 field_diag.interstitial_raw_minimum,
                                 result.diagnostics, result.message)) {
             return result;
           }
-          next.cloudborne[j][k] = raw_cloud;
-          next.interstitial[j][k] = raw_interstitial;
+          next.cloudborne[j][k] = raw_cloud[k];
+          next.interstitial[j][k] = raw_interstitial[k];
         }
       }
     }
@@ -602,9 +778,52 @@ AdvanceResult advance_forward_euler(const State &initial,
                               result.message)) {
     return result;
   }
+  for (int j = 0; j < num_constituents; ++j) {
+    Real total_delta = 0;
+    Real operator_delta = 0;
+    if (!checked_add(result.diagnostics.final_ledger[j],
+                     -result.diagnostics.initial_ledger[j], total_delta) ||
+        !checked_add(total_delta,
+                     -result.diagnostics.clipping_ledger_delta[j],
+                     operator_delta)) {
+      result.message = "Forward Euler ledger diagnostic overflowed";
+      return result;
+    }
+    result.diagnostics.total_ledger_delta[j] = total_delta;
+    result.diagnostics.operator_ledger_delta[j] = operator_delta;
+    Real normalized = 0;
+    if (!normalized_ledger_delta(result.diagnostics.initial_ledger[j],
+                                 operator_delta, normalized)) {
+      result.message =
+          "Forward Euler aerosol ledger normalization is nonfinite";
+      return result;
+    }
+    result.diagnostics.max_normalized_ledger_error =
+        std::max(result.diagnostics.max_normalized_ledger_error,
+                 normalized);
+  }
+  result.diagnostics.normalized_residual =
+      result.diagnostics.normalized_physical_residual;
+  if (!std::isfinite(result.diagnostics.normalized_residual)) {
+    result.message = "Forward Euler normalized residual is nonfinite";
+    return result;
+  }
   result.diagnostics.solution_minimum = result.diagnostics.raw_minimum;
-  result.ok = true;
-  result.message = "ok";
+  const Real ledger_tolerance =
+      std::max(Real(1e-11),
+               5 * static_cast<Real>(op.nlev()) *
+                   std::numeric_limits<Real>::epsilon());
+  result.ok = result.diagnostics.normalized_residual <= 1e-11 &&
+              result.diagnostics.max_normalized_ledger_error <=
+                  ledger_tolerance;
+  if (result.diagnostics.normalized_residual > 1e-11) {
+    result.message = "Forward Euler normalized residual exceeds tolerance";
+  } else if (result.diagnostics.max_normalized_ledger_error >
+             ledger_tolerance) {
+    result.message = "Forward Euler aerosol ledger error exceeds tolerance";
+  } else {
+    result.message = "ok";
+  }
   return result;
 }
 

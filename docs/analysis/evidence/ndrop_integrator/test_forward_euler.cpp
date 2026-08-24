@@ -113,10 +113,29 @@ void check_state_equal(const State &actual, const State &expected,
 
 void check_ledgers(const AdvanceResult &result, const std::string &label) {
   for (int j = 0; j < num_constituents; ++j) {
+    const Real direct_total = result.diagnostics.final_ledger[j] -
+                              result.diagnostics.initial_ledger[j];
     check(near(result.diagnostics.final_ledger[j],
                result.diagnostics.initial_ledger[j]),
           label + " ledger " + std::to_string(j));
+    check(near(result.diagnostics.total_ledger_delta[j], direct_total),
+          label + " total-ledger diagnostic " + std::to_string(j));
+    check(near(result.diagnostics.total_ledger_delta[j],
+               result.diagnostics.clipping_ledger_delta[j] +
+                   result.diagnostics.operator_ledger_delta[j]),
+          label + " ledger decomposition " + std::to_string(j));
+    check(result.diagnostics.clipping_ledger_delta[j] == 0,
+          label + " zero clipping ledger " + std::to_string(j));
+    const Real ledger_scale =
+        std::max(std::abs(result.diagnostics.initial_ledger[j]), Real(1));
+    check(near(result.diagnostics.operator_ledger_delta[j], 0,
+               ledger_scale),
+          label + " zero operator ledger " + std::to_string(j));
   }
+  check(result.diagnostics.normalized_physical_residual <= 1e-11,
+        label + " independent physical residual");
+  check(result.diagnostics.normalized_residual <= 1e-11,
+        label + " normalized residual");
 }
 
 void test_invalid_inputs() {
@@ -167,6 +186,14 @@ void test_invalid_inputs() {
             result.message ==
                 "calculated substep count is outside the supported range",
         "overflowed substep count fails loudly");
+
+  op = make_operator(2, 0.1, 0.01);
+  op.first_level_controller_rate = -1;
+  result = ndrop_test::advance_forward_euler(state, op, 1);
+  check(!result.ok &&
+            result.message ==
+                "first-level controller rate must be finite and nonnegative",
+        "negative controller rate fails loudly");
 }
 
 void test_identity_and_level_counts() {
@@ -234,6 +261,42 @@ void test_substeps_limiter_and_parity() {
   check(result.ok && result.diagnostics.activation_limiter_count > 8,
         "large activation rates engage limiter");
   check_ledgers(result, "limiter-active");
+}
+
+void test_first_level_controller_is_not_physical_flux() {
+  State state = make_state(3);
+  OperatorData controlled = make_operator(3, 0, 0, 1);
+  std::fill(controlled.pressure_weight.begin(),
+            controlled.pressure_weight.end(), 1);
+  std::fill(controlled.cloud_fraction.begin(),
+            controlled.cloud_fraction.end(), 1);
+  controlled.interface_exchange[1] = 0.6;
+  controlled.first_level_controller_rate = 0.6;
+
+  const auto adaptive =
+      ndrop_test::advance_forward_euler(state, controlled, 1);
+  check(adaptive.ok && adaptive.diagnostics.nsubmix == 2,
+        "first-level controller independently increases nsubmix");
+  check(near(adaptive.diagnostics.first_level_controller_rate, 0.6),
+        "first-level controller rate is reported");
+
+  OperatorData physical_only = controlled;
+  physical_only.first_level_controller_rate = 0;
+  const auto uncontrolled =
+      ndrop_test::advance_forward_euler(state, physical_only, 1);
+  check(uncontrolled.ok && uncontrolled.diagnostics.nsubmix == 1,
+        "physical no-flux operator alone uses one substep");
+
+  ForwardEulerOptions one_step;
+  one_step.forced_substeps = 1;
+  const auto forced_controlled =
+      ndrop_test::advance_forward_euler(state, controlled, 0.25, one_step);
+  const auto forced_physical =
+      ndrop_test::advance_forward_euler(state, physical_only, 0.25, one_step);
+  check(forced_controlled.ok && forced_physical.ok,
+        "forced controller comparison succeeds");
+  check_state_equal(forced_controlled.state, forced_physical.state,
+                    "controller never enters physical FE tendency");
 }
 
 void test_fractional_overlap_ledger() {
@@ -375,10 +438,18 @@ void test_forced_step_clipping_accounting() {
             "per-field clipping ledger increment is exact");
       const Real total_change = clipped.diagnostics.final_ledger[j] -
                                 clipped.diagnostics.initial_ledger[j];
+      check(near(clipped.diagnostics.total_ledger_delta[j], total_change),
+            "per-field total ledger change is exact");
       check(near(total_change,
                  clipped.diagnostics.clipping_ledger_delta[j]),
             "per-field ledger change equals clipping contribution");
+      check(near(clipped.diagnostics.operator_ledger_delta[j], 0),
+            "per-field operator ledger excludes clipping");
     }
+    check(clipped.diagnostics.material_negative_count == expected_total,
+          "forced unstable step classifies material negatives");
+    check(clipped.diagnostics.roundoff_negative_count == 0,
+          "forced unstable step has no roundoff negatives");
   }
 
   const State uniform = make_state(3, true);
@@ -396,6 +467,69 @@ void test_forced_step_clipping_accounting() {
               diag.cloudborne_weighted_deficit == 0 &&
               unclipped.diagnostics.clipping_ledger_delta[j] == 0,
           "stable control has exact zero per-field clipping diagnostics");
+  }
+}
+
+void test_roundoff_negative_classification() {
+  State state(2);
+  state.droplet_number = {1, 0};
+  OperatorData op(2);
+  op.interface_exchange[1] = 1;
+  ForwardEulerOptions one_step;
+  one_step.forced_substeps = 1;
+  const Real dt = std::nextafter(Real(1), Real(2));
+  const auto result =
+      ndrop_test::advance_forward_euler(state, op, dt, one_step);
+  check(result.ok, "roundoff-negative FE case succeeds");
+  check(result.diagnostics.droplet_raw_minimum < 0,
+        "roundoff-negative FE case retains raw minimum");
+  check(result.diagnostics.droplet_roundoff_negative_count == 1,
+        "droplet roundoff negative is counted");
+  check(result.diagnostics.droplet_material_negative_count == 0,
+        "droplet roundoff negative is not material");
+  check(result.diagnostics.roundoff_negative_count == 1 &&
+            result.diagnostics.material_negative_count == 0,
+        "global FE negative classification is exact");
+}
+
+void test_diagnostic_scaling_and_zero_ledgers() {
+  for (const Real factor : {Real(1e-12), Real(1), Real(1e12)}) {
+    State state = make_state(3);
+    for (Real &value : state.droplet_number) {
+      value *= factor;
+    }
+    for (int j = 0; j < num_constituents; ++j) {
+      for (Real &value : state.interstitial[j]) {
+        value *= factor;
+      }
+      for (Real &value : state.cloudborne[j]) {
+        value *= factor;
+      }
+    }
+    const OperatorData op = make_operator(3, 0.2, 0.01, 0.8);
+    const auto result = ndrop_test::advance_forward_euler(state, op, 0.25);
+    check(result.ok, "scaled FE diagnostic case succeeds");
+    check(std::isfinite(result.diagnostics.normalized_physical_residual) &&
+              result.diagnostics.normalized_physical_residual <= 1e-11,
+          "scaled FE residual is finite and within tolerance");
+    check(std::isfinite(
+              result.diagnostics.max_normalized_ledger_error) &&
+              result.diagnostics.max_normalized_ledger_error <= 1e-11,
+          "scaled FE operator ledger is finite and within tolerance");
+    check_ledgers(result, "scaled FE");
+  }
+
+  State zero_aerosol(3);
+  zero_aerosol.droplet_number = {1, 2, 3};
+  const OperatorData zero_op = make_operator(3, 0.2, 0, 1);
+  const auto zero =
+      ndrop_test::advance_forward_euler(zero_aerosol, zero_op, 0.25);
+  check(zero.ok, "zero-ledger FE case succeeds");
+  for (int j = 0; j < num_constituents; ++j) {
+    check(zero.diagnostics.initial_ledger[j] == 0 &&
+              zero.diagnostics.total_ledger_delta[j] == 0 &&
+              zero.diagnostics.operator_ledger_delta[j] == 0,
+          "zero-ledger FE uses exact absolute diagnostics");
   }
 }
 
@@ -813,9 +947,12 @@ int main() {
     test_identity_and_level_counts();
     test_uniform_full_overlap();
     test_substeps_limiter_and_parity();
+    test_first_level_controller_is_not_physical_flux();
     test_fractional_overlap_ledger();
     test_adaptive_subcycling_avoids_clipping();
     test_forced_step_clipping_accounting();
+    test_roundoff_negative_classification();
+    test_diagnostic_scaling_and_zero_ledgers();
     test_zero_cloud_postprocess();
     test_finite_failures();
     test_diffusion_convergence();

@@ -20,16 +20,14 @@ using mam4::ColumnView;
 using mam4::DeviceType;
 using mam4::ndrop::View1D;
 using mam4::ndrop::View2D;
+using mam4::ndrop::View3D;
 using ndrop_test::OperatorData;
 using ndrop_test::Real;
 using ndrop_test::State;
 
 constexpr int pver = mam4::ndrop::pver;
-constexpr int top_lev = 1;
-constexpr int active_levels = pver - top_lev;
 constexpr int nmodes = mam4::AeroConfig::num_modes();
 constexpr int ncnst = mam4::ndrop::ncnst_tot;
-constexpr int nspec_max = mam4::ndrop::nspec_max;
 
 static_assert(pver == 128, "comparison must be configured for L128");
 static_assert(nmodes == ndrop_test::num_modes, "mode count mismatch");
@@ -45,7 +43,9 @@ struct ColumnStorage {
 };
 
 struct Comparison {
-  int expected_nsubmix = 0;
+  int canonical_nsubmix = 0;
+  int exact_nsubmix = 0;
+  int physical_only_nsubmix = 0;
   int exact_final_buffer = -1;
   int canonical_final_buffer = -1;
   Real max_absolute_difference = 0;
@@ -60,24 +60,6 @@ enum class CloudProfile {
   contiguous_zero,
   all_zero
 };
-
-void build_mode_map(int nspec_amode[nmodes],
-                    int mam_idx[nmodes][nspec_max]) {
-  const int species_per_mode[nmodes] = {7, 4, 7, 3};
-  int one_based_constituent = 1;
-  for (int mode = 0; mode < nmodes; ++mode) {
-    nspec_amode[mode] = species_per_mode[mode];
-    for (int slot = 0; slot < nspec_max; ++slot) {
-      mam_idx[mode][slot] = 1;
-    }
-    for (int slot = 0; slot <= species_per_mode[mode]; ++slot) {
-      mam_idx[mode][slot] = one_based_constituent++;
-    }
-  }
-  if (one_based_constituent != ncnst + 1) {
-    throw std::runtime_error("mode map does not cover all constituents");
-  }
-}
 
 Real cloud_fraction(const int active_k, const CloudProfile profile) {
   if (profile == CloudProfile::full) {
@@ -96,7 +78,8 @@ Real cloud_fraction(const int active_k, const CloudProfile profile) {
   return cloud[static_cast<std::size_t>(active_k) % cloud.size()];
 }
 
-State initial_state() {
+State initial_state(const int top_lev) {
+  const int active_levels = pver - top_lev;
   State state(active_levels);
   for (int h = 0; h < active_levels; ++h) {
     state.droplet_number[h] = 10 + 0.01 * h;
@@ -113,15 +96,23 @@ State initial_state() {
 OperatorData canonical_operator(const Real exchange,
                                 const Real activation_rate,
                                 const CloudProfile profile,
-                                const bool distinct_modes) {
+                                const bool distinct_modes,
+                                const int top_lev,
+                                const bool first_interface_only) {
+  const int active_levels = pver - top_lev;
   OperatorData op(active_levels);
   for (int h = 0; h < active_levels; ++h) {
     op.pressure_weight[h] = 1;
     op.cloud_fraction[h] = cloud_fraction(h, profile);
   }
   for (int interface = 1; interface < active_levels; ++interface) {
-    op.interface_exchange[interface] = exchange;
+    op.interface_exchange[interface] =
+        first_interface_only && interface > 1 ? Real(0) : exchange;
   }
+  // Current MAM4xx duplicates eddy_diff(top_lev) in its first-level
+  // timescale controller. The duplicate self-cancels in every physical
+  // tendency and therefore remains separate from interface_exchange.
+  op.first_level_controller_rate = exchange;
   for (int mode = 0; mode < nmodes; ++mode) {
     const Real number_rate =
         activation_rate * (distinct_modes ? Real(mode + 1) : Real(1));
@@ -154,16 +145,24 @@ void compare_value(const Real exact, const Real canonical,
 
 Comparison run_comparison(const Real exchange, const Real activation_rate,
                           const CloudProfile profile,
-                          const bool distinct_modes = false) {
-  const State initial = initial_state();
+                          const int top_lev,
+                          const bool distinct_modes = false,
+                          const bool first_interface_only = false) {
+  const int active_levels = pver - top_lev;
+  const State initial = initial_state(top_lev);
   const OperatorData host_op =
-      canonical_operator(exchange, activation_rate, profile, distinct_modes);
+      canonical_operator(exchange, activation_rate, profile, distinct_modes,
+                         top_lev, first_interface_only);
   const auto canonical =
       ndrop_test::advance_forward_euler(initial, host_op, 1);
   if (!canonical.ok) {
     throw std::runtime_error("canonical Forward Euler failed: " +
                              canonical.message);
   }
+  OperatorData physical_only = host_op;
+  physical_only.first_level_controller_rate = 0;
+  const int physical_only_nsubmix = ndrop_test::production_nsubmix(
+      ndrop_test::prepare_operator(physical_only), 1);
 
   ColumnStorage csbot_store("csbot");
   ColumnStorage cldn_store("cldn");
@@ -176,8 +175,6 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
   ColumnStorage dkp_store("eddy_diff_kp");
   ColumnStorage dkm_store("eddy_diff_km");
   ColumnStorage qncld_store("qncld");
-  ColumnStorage srcn_store("srcn");
-  ColumnStorage source_store("source");
 
   auto &csbot = csbot_store.view;
   auto &cldn = cldn_store.view;
@@ -190,8 +187,6 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
   auto &eddy_diff_kp = dkp_store.view;
   auto &eddy_diff_km = dkm_store.view;
   auto &qncld = qncld_store.view;
-  auto &srcn = srcn_store.view;
-  auto &source = source_store.view;
 
   Kokkos::deep_copy(csbot, Real(1));
   Kokkos::deep_copy(cldn, Real(1));
@@ -204,14 +199,13 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
   Kokkos::deep_copy(eddy_diff_kp, Real(0));
   Kokkos::deep_copy(eddy_diff_km, Real(0));
   Kokkos::deep_copy(qncld, Real(0));
-  Kokkos::deep_copy(srcn, Real(0));
-  Kokkos::deep_copy(source, Real(0));
 
   for (int h = 0; h < active_levels; ++h) {
     const int k = h + top_lev;
     cldn(k) = cloud_fraction(h, profile);
     qcld(k) = initial.droplet_number[h];
-    if (h + 1 < active_levels) {
+    if (h + 1 < active_levels &&
+        (!first_interface_only || h == 0)) {
       eddy_diff(k) = exchange;
     }
   }
@@ -235,56 +229,43 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
     }
   }
 
-  View1D raercol[pver][2];
-  View1D raercol_cw[pver][2];
-  for (int k = 0; k < pver; ++k) {
-    for (int buffer = 0; buffer < 2; ++buffer) {
-      raercol[k][buffer] =
-          View1D("raercol_" + std::to_string(k) + "_" +
-                     std::to_string(buffer),
-                 ncnst);
-      raercol_cw[k][buffer] =
-          View1D("raercol_cw_" + std::to_string(k) + "_" +
-                     std::to_string(buffer),
-                 ncnst);
-      Kokkos::deep_copy(raercol[k][buffer], Real(0));
-      Kokkos::deep_copy(raercol_cw[k][buffer], Real(0));
-    }
-  }
+  View3D raercol("raercol", pver, 2, ncnst);
+  View3D raercol_cw("raercol_cw", pver, 2, ncnst);
+  Kokkos::deep_copy(raercol, Real(0));
+  Kokkos::deep_copy(raercol_cw, Real(0));
   for (int h = 0; h < active_levels; ++h) {
     const int k = h + top_lev;
     for (int j = 0; j < ncnst; ++j) {
-      raercol[k][0](j) = initial.interstitial[j][h];
-      raercol_cw[k][0](j) = initial.cloudborne[j][h];
+      raercol(k, 0, j) = initial.interstitial[j][h];
+      raercol_cw(k, 0, j) = initial.cloudborne[j][h];
       // Poison the destination to detect an incomplete write.
-      raercol[k][1](j) = 7 * initial.interstitial[j][h];
-      raercol_cw[k][1](j) = 7 * initial.cloudborne[j][h];
+      raercol(k, 1, j) = 7 * initial.interstitial[j][h];
+      raercol_cw(k, 1, j) = 7 * initial.cloudborne[j][h];
     }
   }
 
-  int nspec_amode[nmodes];
-  int mam_idx[nmodes][nspec_max];
-  build_mode_map(nspec_amode, mam_idx);
-
-  typename DeviceType::template view_1d<int> indices("indices", 2);
-  const auto policy = haero::ThreadTeamPolicy(1u, Kokkos::AUTO);
+  typename DeviceType::template view_1d<int> indices("indices", 3);
+  const auto policy = mam4::ThreadTeamPolicy(1u, Kokkos::AUTO);
   Kokkos::parallel_for(
       "compare_mam4xx_forward_euler", policy,
       KOKKOS_LAMBDA(const mam4::ThreadTeam &team) {
         int nsav = 0;
         int nnew = 1;
+        int nsubmix = 0;
         mam4::ndrop::update_from_explmix(
             team, Real(1), csbot, cldn, zn, zs, eddy_diff, nact, mact, qcld,
-            raercol, raercol_cw, nsav, nnew, nspec_amode, mam_idx, true,
-            top_lev, overlapp, overlapm, eddy_diff_kp, eddy_diff_km, qncld,
-            srcn, source);
+            raercol, raercol_cw, nsav, nnew, nsubmix, top_lev, overlapp,
+            overlapm, eddy_diff_kp, eddy_diff_km, qncld);
         indices(0) = nsav;
         indices(1) = nnew;
+        indices(2) = nsubmix;
       });
   Kokkos::fence();
 
   Comparison comparison;
-  comparison.expected_nsubmix = canonical.diagnostics.nsubmix;
+  comparison.canonical_nsubmix = canonical.diagnostics.nsubmix;
+  comparison.exact_nsubmix = indices(2);
+  comparison.physical_only_nsubmix = physical_only_nsubmix;
   comparison.exact_final_buffer = indices(1);
   comparison.canonical_final_buffer =
       canonical.diagnostics.final_buffer;
@@ -295,9 +276,9 @@ Comparison run_comparison(const Real exchange, const Real activation_rate,
     const int k = h + top_lev;
     compare_value(qcld(k), canonical.state.droplet_number[h], comparison);
     for (int j = 0; j < ncnst; ++j) {
-      compare_value(raercol[k][indices(1)](j),
+      compare_value(raercol(k, indices(1), j),
                     canonical.state.interstitial[j][h], comparison);
-      compare_value(raercol_cw[k][indices(1)](j),
+      compare_value(raercol_cw(k, indices(1), j),
                     canonical.state.cloudborne[j][h], comparison);
     }
   }
@@ -312,40 +293,66 @@ int main(int argc, char **argv) {
   try {
     struct TestCase {
       const char *name;
+      int top_lev;
       Real exchange;
       Real activation_rate;
       CloudProfile profile;
       int expected_nsubmix;
-      bool distinct_modes = false;
+      int expected_physical_only_nsubmix;
+      bool distinct_modes;
+      bool first_interface_only;
     };
-    constexpr std::array<TestCase, 10> cases = {
-        TestCase{"one_full_inactive", 0.01, 0.001, CloudProfile::full, 1},
-        TestCase{"two_full_inactive", 0.5, 0.001, CloudProfile::full, 2},
-        TestCase{"three_full_inactive", 1, 0.001, CloudProfile::full, 3},
-        TestCase{"five_full_inactive", 2, 0.001, CloudProfile::full, 5},
-        TestCase{"three_fractional_inactive", 1, 0.001,
-                 CloudProfile::fractional, 3},
-        TestCase{"two_fractional_distinct_modes", 0.5, 0.001,
-                 CloudProfile::fractional, 2, true},
-        TestCase{"two_fractional_limiter", 0.5, 10,
-                 CloudProfile::fractional, 2},
-        TestCase{"isolated_zero", 0.5, 0.001,
-                 CloudProfile::isolated_zero, 2},
-        TestCase{"contiguous_zero", 0.5, 0.001,
-                 CloudProfile::contiguous_zero, 2},
-        TestCase{"all_zero", 0.5, 0.001, CloudProfile::all_zero, 2}};
+    constexpr std::array<TestCase, 15> cases = {
+        TestCase{"top0_one_full_inactive", 0, 0.01, 0.001,
+                 CloudProfile::full, 1, 1, false, false},
+        TestCase{"top0_two_fractional", 0, 0.5, 0.001,
+                 CloudProfile::fractional, 2, 2, false, false},
+        TestCase{"top1_one_full_inactive", 1, 0.01, 0.001,
+                 CloudProfile::full, 1, 1, false, false},
+        TestCase{"top1_two_full_inactive", 1, 0.5, 0.001,
+                 CloudProfile::full, 2, 2, false, false},
+        TestCase{"top1_three_full_inactive", 1, 1, 0.001,
+                 CloudProfile::full, 3, 3, false, false},
+        TestCase{"top1_five_full_inactive", 1, 2, 0.001,
+                 CloudProfile::full, 5, 5, false, false},
+        TestCase{"top1_three_fractional_inactive", 1, 1, 0.001,
+                 CloudProfile::fractional, 3, 3, false, false},
+        TestCase{"top1_two_fractional_distinct_modes", 1, 0.5, 0.001,
+                 CloudProfile::fractional, 2, 2, true, false},
+        TestCase{"top1_two_fractional_limiter", 1, 0.5, 10,
+                 CloudProfile::fractional, 2, 2, false, false},
+        TestCase{"top1_isolated_zero", 1, 0.5, 0.001,
+                 CloudProfile::isolated_zero, 2, 2, false, false},
+        TestCase{"top1_contiguous_zero", 1, 0.5, 0.001,
+                 CloudProfile::contiguous_zero, 2, 2, false, false},
+        TestCase{"top1_all_zero", 1, 0.5, 0.001,
+                 CloudProfile::all_zero, 2, 2, false, false},
+        TestCase{"top6_one_full_inactive", 6, 0.01, 0.001,
+                 CloudProfile::full, 1, 1, false, false},
+        TestCase{"top6_two_fractional", 6, 0.5, 0.001,
+                 CloudProfile::fractional, 2, 2, false, false},
+        TestCase{"top6_controller_limiting", 6, 0.6, 0,
+                 CloudProfile::full, 2, 1, false, true}};
 
     for (const auto &test : cases) {
       const Comparison result =
           run_comparison(test.exchange, test.activation_rate,
-                         test.profile, test.distinct_modes);
+                         test.profile, test.top_lev, test.distinct_modes,
+                         test.first_interface_only);
       const bool pass =
-          result.expected_nsubmix == test.expected_nsubmix &&
+          result.canonical_nsubmix == test.expected_nsubmix &&
+          result.exact_nsubmix == result.canonical_nsubmix &&
+          result.physical_only_nsubmix ==
+              test.expected_physical_only_nsubmix &&
           result.mismatches == 0;
       failures += pass ? 0 : 1;
       std::cout << std::setprecision(17) << "CASE name=" << test.name
                 << " status=" << (pass ? "PASS" : "FAIL")
-                << " nsubmix=" << result.expected_nsubmix
+                << " top_lev=" << test.top_lev
+                << " canonical_nsubmix=" << result.canonical_nsubmix
+                << " exact_nsubmix=" << result.exact_nsubmix
+                << " physical_only_nsubmix="
+                << result.physical_only_nsubmix
                 << " exact_final_buffer=" << result.exact_final_buffer
                 << " canonical_final_buffer="
                 << result.canonical_final_buffer

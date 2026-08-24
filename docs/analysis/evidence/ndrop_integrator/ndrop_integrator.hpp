@@ -30,6 +30,10 @@ struct OperatorData {
   // Interior entry k is shared by levels k-1 and k [kg m^-2 s^-1].
   std::vector<Real> interface_exchange;
   std::vector<Real> cloud_fraction;
+  // Controller-only duplicate of the first active mixing rate [s^-1]. This
+  // participates in production substep selection but never in a tendency or
+  // physical operator matrix.
+  Real first_level_controller_rate = 0;
   std::array<std::vector<Real>, num_modes> number_activation_rate;
   std::array<std::vector<Real>, num_modes> mass_activation_rate;
 
@@ -45,6 +49,7 @@ struct PreparedOperator {
   std::vector<Real> overlap_above;
   std::array<std::vector<Real>, num_modes> number_activation_rate;
   std::array<std::vector<Real>, num_modes> mass_activation_rate;
+  Real first_level_controller_rate = 0;
   int activation_limiter_count = 0;
   Real max_inverse_mixing_time = 0;
 
@@ -58,6 +63,10 @@ struct FieldClipping {
   Real cloudborne_weighted_deficit = 0;
   int interstitial_count = 0;
   int cloudborne_count = 0;
+  int interstitial_roundoff_negative_count = 0;
+  int interstitial_material_negative_count = 0;
+  int cloudborne_roundoff_negative_count = 0;
+  int cloudborne_material_negative_count = 0;
 };
 
 struct AdvanceDiagnostics {
@@ -70,17 +79,24 @@ struct AdvanceDiagnostics {
   Real droplet_weighted_deficit = 0;
   int droplet_clipping_count = 0;
   Real max_inverse_mixing_time = 0;
+  Real first_level_controller_rate = 0;
   Real normalized_residual = 0;
   Real normalized_matrix_residual = 0;
   Real normalized_physical_residual = 0;
   Real max_normalized_ledger_error = 0;
   Real solution_minimum = std::numeric_limits<Real>::infinity();
   int negative_count = 0;
+  int roundoff_negative_count = 0;
+  int material_negative_count = 0;
+  int droplet_roundoff_negative_count = 0;
+  int droplet_material_negative_count = 0;
   bool positivity_failure = false;
   std::array<FieldClipping, num_constituents> field_clipping{};
   std::array<Real, num_constituents> initial_ledger{};
   std::array<Real, num_constituents> final_ledger{};
   std::array<Real, num_constituents> clipping_ledger_delta{};
+  std::array<Real, num_constituents> total_ledger_delta{};
+  std::array<Real, num_constituents> operator_ledger_delta{};
 };
 
 struct AdvanceResult {
@@ -101,7 +117,8 @@ enum class ImexFiniteProbe {
   solution,
   matrix_residual,
   physical_residual,
-  ledger_normalization
+  ledger_normalization,
+  ledger_decomposition
 };
 
 int constituent_mode(int constituent);

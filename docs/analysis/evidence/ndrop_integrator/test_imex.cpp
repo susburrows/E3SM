@@ -110,12 +110,24 @@ void check_ledgers(const AdvanceResult &result, const std::string &label) {
                5 * static_cast<Real>(result.state.nlev()) *
                    std::numeric_limits<Real>::epsilon());
   for (int j = 0; j < num_constituents; ++j) {
+    const Real direct_total = result.diagnostics.final_ledger[j] -
+                              result.diagnostics.initial_ledger[j];
     const Real scale =
         std::max(std::abs(result.diagnostics.initial_ledger[j]), Real(1));
     check(std::abs(result.diagnostics.final_ledger[j] -
                    result.diagnostics.initial_ledger[j]) <=
               tolerance * scale,
           label + " ledger " + std::to_string(j));
+    check(near(result.diagnostics.total_ledger_delta[j], direct_total),
+          label + " total-ledger diagnostic " + std::to_string(j));
+    check(result.diagnostics.clipping_ledger_delta[j] == 0,
+          label + " implicit clipping ledger is zero " + std::to_string(j));
+    check(near(result.diagnostics.operator_ledger_delta[j], direct_total),
+          label + " operator-ledger diagnostic " + std::to_string(j));
+    check(near(result.diagnostics.total_ledger_delta[j],
+               result.diagnostics.clipping_ledger_delta[j] +
+                   result.diagnostics.operator_ledger_delta[j]),
+          label + " ledger decomposition " + std::to_string(j));
   }
 }
 
@@ -612,6 +624,13 @@ void test_positivity_failure() {
         "material-negative IMEX case is classified");
   check(result.diagnostics.negative_count > 0,
         "material-negative IMEX count is reported");
+  check(result.diagnostics.material_negative_count > 0 &&
+            result.diagnostics.roundoff_negative_count == 0,
+        "material-negative IMEX classification is explicit");
+  check(result.diagnostics.negative_count ==
+            result.diagnostics.material_negative_count +
+                result.diagnostics.roundoff_negative_count,
+        "IMEX total negative count equals its classifications");
   check(result.message == "material negative value in IMEX solution",
         "material-negative IMEX message");
 
@@ -730,9 +749,51 @@ void test_nonfinite_checker_probes() {
        {ndrop_test::ImexFiniteProbe::solution,
         ndrop_test::ImexFiniteProbe::matrix_residual,
         ndrop_test::ImexFiniteProbe::physical_residual,
-        ndrop_test::ImexFiniteProbe::ledger_normalization}) {
+        ndrop_test::ImexFiniteProbe::ledger_normalization,
+        ndrop_test::ImexFiniteProbe::ledger_decomposition}) {
     check(ndrop_test::imex_nonfinite_probe_is_rejected(probe),
           "IMEX finite-stage checker rejects injected nonfinite value");
+  }
+}
+
+void test_diagnostic_scaling_and_zero_ledgers() {
+  for (const Real factor : {Real(1e-12), Real(1), Real(1e12)}) {
+    State state = make_state(3);
+    for (Real &value : state.droplet_number) {
+      value *= factor;
+    }
+    for (int j = 0; j < num_constituents; ++j) {
+      for (Real &value : state.interstitial[j]) {
+        value *= factor;
+      }
+      for (Real &value : state.cloudborne[j]) {
+        value *= factor;
+      }
+    }
+    const OperatorData op = make_operator(3, 0.2, 0.01, false);
+    const auto result = ndrop_test::advance_imex(state, op, 0.25);
+    check(result.ok, "scaled IMEX diagnostic case succeeds: " +
+                         result.message);
+    check(std::isfinite(result.diagnostics.normalized_physical_residual) &&
+              result.diagnostics.normalized_physical_residual <= 1e-11,
+          "scaled IMEX residual is finite and within tolerance");
+    check(std::isfinite(
+              result.diagnostics.max_normalized_ledger_error) &&
+              result.diagnostics.max_normalized_ledger_error <= 1e-11,
+          "scaled IMEX operator ledger is finite and within tolerance");
+    check_ledgers(result, "scaled IMEX");
+  }
+
+  State zero_aerosol(3);
+  zero_aerosol.droplet_number = {1, 2, 3};
+  const OperatorData zero_op = make_operator(3, 0.2, 0, false);
+  const auto zero = ndrop_test::advance_imex(zero_aerosol, zero_op, 0.25);
+  check(zero.ok, "zero-ledger IMEX case succeeds");
+  for (int j = 0; j < num_constituents; ++j) {
+    check(zero.diagnostics.initial_ledger[j] == 0 &&
+              zero.diagnostics.total_ledger_delta[j] == 0 &&
+              zero.diagnostics.operator_ledger_delta[j] == 0,
+          "zero-ledger IMEX uses exact absolute diagnostics");
   }
 }
 
@@ -848,6 +909,7 @@ int main(int argc, char **argv) {
     test_zero_cloud_postprocess();
     test_finite_failures();
     test_nonfinite_checker_probes();
+    test_diagnostic_scaling_and_zero_ledgers();
     test_coupled_cross_scheme_convergence();
     test_nonfinite_assembly_failure();
   } catch (const std::exception &error) {
