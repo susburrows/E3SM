@@ -1117,6 +1117,37 @@ reports its frequency, magnitude, and ledger change. Any optional implicit
 fallback clipping is a separately labeled experiment and cannot repair a
 method gate.
 
+#### Task 2 as-built synchronization
+
+The standalone FE/IMEX requalification was implemented at E3SM harness commits
+`e67097b6bc29e919329a729d48776f866a32038e` and
+`07c786d82d7571fd01527b26cc3c21de09e09acd`. `OperatorData` and
+`PreparedOperator` now carry `first_level_controller_rate` in s^-1. The value is
+validated as finite and nonnegative, participates only in the FE
+`production_nsubmix` reduction and its reported maximum inverse timescale, and
+is absent from `apply_cloud_operator`, `apply_interstitial_operator`, FE
+tendencies, IMEX matrices, residuals, and all aerosol ledgers.
+
+`AdvanceDiagnostics` now exposes signed `total_ledger_delta`,
+`clipping_ledger_delta`, and `operator_ledger_delta` arrays for all 25 aerosol
+pairs, global and field-specific roundoff/material negative counts, and the
+controller rate. FE assembles an independent like-unit physical residual for
+each raw field at every substep before clipping. IMEX retains separate matrix
+and independently assembled physical residuals. Both paths fail closed on
+nonfinite residual or ledger arithmetic; zero initial aerosol ledgers use the
+approved absolute normalization. No equation, source sign, boundary row,
+limiter, bottom-source convention, or zero-cloud projection differs from the
+approved contract.
+
+The current MAM4xx adapter now builds against the locked rank-3-view API with
+no archived Haero dependency. It directly compares the returned `nsubmix`,
+final alternating buffer, droplets, and all aerosol reservoirs at
+`top_lev=0,1,6`. In its controller-limiting profile, exact current MAM4xx and
+the canonical harness both return two substeps while the same physical
+no-flux operator without the controller returns one. The archived
+`1b02f272...` failure remains a separate historical artifact and is not
+registered in the current CTest gate.
+
 #### Required numerical matrix and gates
 
 The accuracy gate covers level counts `1,2,3,127,128`; overlap values
@@ -2242,8 +2273,10 @@ current run matrix.
 - Validation at the older evidence revision initialized both alternating work
   arrays and therefore cannot by itself establish the safety of that historical
   partial-disable path.
-- The existing tests do not span the boundary matrix or verify paired aerosol
-  ledgers.
+- Task 2 now exercises repaired current-MAM4xx boundaries at `top_lev=0,1,6`
+  and verifies paired aerosol ledger decompositions. The complete Task 4
+  cross-method parameter matrix and whole-model boundary evidence remain
+  pending.
 - The `Kokkos::Min` reducer overwrites, rather than incorporates, the
   preassigned `dtmin=dtmicro`. This permits `nsubmix=1` under weak mixing and
   differs from the apparent source-level intent; the numerical and performance
@@ -2273,6 +2306,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-24 | Codex | Synchronized the Task 2 FE/IMEX implementation as built: controller-only substep selection, signed total/clipping/operator ledgers, like-unit independent residuals, explicit roundoff/material classifications, fail-closed diagnostic arithmetic, scaled and zero-ledger tests, three-run bitwise state checks, and the locked current-MAM4xx rank-3 adapter at `top_lev=0,1,6`. Debug/sanitizer and optimized standalone gates pass; production physics remains unchanged. |
 | 2026-08-18 | User / Codex | Replaced disposable `/private/tmp` screening storage with the approved persistent local split: temporary worktrees, dependency checkouts, and builds below `/Users/burr114/e3sm-scratch/`; retained results and provenance below `/Users/burr114/e3sm-results/`. Numerical and production-physics contracts are unchanged. |
 | 2026-08-18 | User / Codex | Approved and froze the standalone cross-method screening contract: current and archived dependency revisions, controller-only first-active-level FE rate, signed no-flux IMEX and BE rows, block-Thomas and independent dense-oracle rules, diagnostic decompositions, matrix-family reuse, complete numerical and performance grids, acceptance thresholds, and test-only scope. Production physics remains unchanged. |
 | 2026-08-17 | User / Codex | Documented the approved diagnostic-only implementation of the exact `nsubmix` count, per-physics-step sum, and per-physics-step maximum; rebased it onto current E3SM and MAM4xx; distinguished the repaired current paths from the two older defects; and kept all operator equations unchanged. |

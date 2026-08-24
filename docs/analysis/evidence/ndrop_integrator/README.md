@@ -51,17 +51,19 @@ buffers, and componentwise positivity clipping. The test suite covers all 25
 aerosol constituents and droplet number.
 
 Build and run outside the OneDrive source tree. `Kokkos_DIR` must identify a
-Serial Kokkos build matching the selected locked EKAT revision. The archived
-exact-current adapter also requires the archived Haero source; pass its locked
-checkout explicitly when reproducing that historical gate.
+Serial Kokkos build matching the selected locked EKAT revision. The current
+adapter uses the locked current MAM4xx rank-3-view API and does not depend on
+Haero. Archived Haero-based outputs remain historical artifacts only.
 
 ```bash
 cmake -S /path/to/E3SM/docs/analysis/evidence/ndrop_integrator \
   -B /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
   -DCMAKE_BUILD_TYPE=Debug \
   -DKokkos_DIR=/Users/burr114/e3sm-scratch/ndrop-screening/kokkos-install-debug/lib/cmake/Kokkos \
+  -DEKAT_SOURCE=/Users/burr114/e3sm-scratch/ndrop-screening/dependencies/current/ekat \
+  -DMAM4XX_SOURCE=/Users/burr114/e3sm-scratch/ndrop-screening/dependencies/current/mam4xx \
   -DNDROP_ENABLE_SANITIZERS=ON \
-  -DHAERO_SOURCE=/path/to/haero
+  -DNDROP_BUILD_EXACT_ADAPTER=ON
 cmake --build /Users/burr114/e3sm-scratch/ndrop-screening/build/debug --parallel 4
 ctest --test-dir /Users/burr114/e3sm-scratch/ndrop-screening/build/debug \
   --output-on-failure
@@ -72,19 +74,23 @@ Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
 `CMakeLists.txt` applies warnings-as-errors to all harness sources and registers
 the Forward Euler, IMEX, and exact-current executables with CTest.
 
-Successful harness tests do not validate the known production `top_lev=0` or
-`enable_aero_vertical_mix=false` defect paths. Those paths are explicitly
-excluded by the approved design.
+The current adapter validates the repaired current-MAM4xx `top_lev=0` path.
+The archived `1b02f272...` `top_lev=0` expected failure and its historical
+`enable_aero_vertical_mix=false` defect are explicitly excluded from the
+current passing gate.
 
 `compare_mam4xx_forward_euler.cpp` is the separate exact-current-function
 adapter. It compares the canonical harness with the unmodified
-`mam4::ndrop::update_from_explmix` at `NUM_VERTICAL_LEVELS=128` and a safe
-`top_lev=1`. It covers production substep counts 1, 2, 3, and 5; full and
-fractional overlap; limiter-active and limiter-inactive activation; and
-isolated, contiguous, and all-zero cloud profiles. One case assigns distinct
-number and mass activation rates to every mode so a mode-mapping permutation
-cannot be hidden by equal coefficients. The destination work array is filled
-with unrelated values before every exact call to detect incomplete writes.
+`mam4::ndrop::update_from_explmix` at `MAM4XX_NUM_VERTICAL_LEVELS=128` and
+`top_lev=0,1,6`. It directly compares the returned `nsubmix`, covers production
+substep counts 1, 2, 3, and 5, and includes a first-interface-only profile in
+which the controller changes `nsubmix` from one to two without entering the
+physical tendency. The other cases cover full and fractional overlap,
+limiter-active and limiter-inactive activation, and isolated, contiguous, and
+all-zero cloud profiles. One case assigns distinct number and mass activation
+rates to every mode so a mode-mapping permutation cannot be hidden by equal
+coefficients. The destination work array is filled with unrelated values
+before every exact call to detect incomplete writes.
 
 `ndrop_imex.cpp` implements the approved IMEX split with EKAT's serial Thomas
 solver. `test_imex.cpp` checks identity and uniform-state behavior, fractional-
@@ -148,6 +154,28 @@ reviewer-only mode, matrix, clipping, and hand-solve checks. It assigned strict
 `PASS` decisions to both the Forward Euler and IMEX gates. The complete review
 is retained in `independent_review_20260806.md`.
 
+### Executed results: 2026-08-24 current locked stack
+
+Task 2 requalified FE and IMEX at code/test commits `e67097b6bc` and
+`07c786d82d` using the current lock manifest. Both the debug build with
+ASan/UBSan and the optimized release build passed all three registered CTest
+executables. FE passed 23,195 checks, IMEX passed 25,138 checks, and the
+current-MAM4xx adapter passed all 15
+cases with zero field mismatches and exact `nsubmix` equality. The
+controller-limiting case returned `canonical_nsubmix=2`, `exact_nsubmix=2`, and
+`physical_only_nsubmix=1`. Each FE and IMEX executable also performs three
+serial advances and verifies bitwise-identical full output states.
+
+The focused gate added signed total/clipping/operator ledger decompositions,
+per-substep FE and independent IMEX physical residuals, explicit
+roundoff-versus-material negative classifications, finite diagnostic guards,
+zero-ledger absolute checks, and state scaling by `1e-12`, `1`, and `1e12`.
+The detailed commands, TDD record, hashes, limitations, and separate method
+decisions are in `fe_imex_gate_review_20260824.md`. Retained verbose logs and
+locked-stack provenance are below
+`/Users/burr114/e3sm-results/ndrop-screening/task2-fe-imex` and
+`/Users/burr114/e3sm-results/ndrop-screening/provenance`.
+
 ### Executed results: 2026-08-06
 
 The sanitizer/debug and optimized Forward Euler runs each passed 21,284 checks:
@@ -175,10 +203,11 @@ Both CTest configurations passed all three registered executables. All build
 products were under `/private/tmp/ndrop-gate-remediate`; no dependency or
 production-physics source was modified.
 
-The debug executables used ASan/UBSan and Kokkos bounds checking. The optimized
-executables used `-O3 -DNDEBUG` and the release Kokkos/EKAT libraries. Both
-configurations use double precision, Apple clang 21.0.0 on arm64 macOS, Kokkos
-4.5.1 Serial, and EKAT's serial Thomas solver. Compilation with
+The historical 2026-08-06 debug executables used ASan/UBSan and Kokkos bounds
+checking. The historical optimized executables used `-O3 -DNDEBUG` and the
+release Kokkos/EKAT libraries. Both configurations used double precision,
+Apple clang 21.0.0 on arm64 macOS, Kokkos 4.5.1 Serial, and EKAT's serial
+Thomas solver. Compilation with
 `-Wall -Wextra -Wpedantic -Werror` was clean for harness sources; EKAT/Kokkos
 headers were treated as system headers for this check.
 
