@@ -1,4 +1,5 @@
 #include "ndrop_integrator.hpp"
+#include "ndrop_phase_timer.hpp"
 
 #include <ekat_tridiag.hpp>
 
@@ -290,7 +291,9 @@ void update_positivity(const std::vector<Real> &initial,
 } // namespace
 
 AdvanceResult advance_imex(const State &initial, const OperatorData &data,
-                           const Real dt) {
+                           const Real dt, const AdvanceControl &control) {
+  PhaseStopwatch stopwatch(control.phase_timings);
+  stopwatch.phase(&AdvancePhaseTimings::setup);
   AdvanceResult result;
   result.state = State(initial.nlev());
   if (!validate(initial, data, dt, result.message)) {
@@ -310,10 +313,14 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
       op.max_inverse_mixing_time;
   result.diagnostics.first_level_controller_rate =
       op.first_level_controller_rate;
-  if (!checked_column_ledgers(initial, op.pressure_weight,
-                              result.diagnostics.initial_ledger,
-                              result.message)) {
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    if (!checked_column_ledgers(initial, op.pressure_weight,
+                                result.diagnostics.initial_ledger,
+                                result.message)) {
+      return result;
+    }
+    stopwatch.phase(&AdvancePhaseTimings::setup);
   }
 
   const Matrix cloud = cloud_matrix(op, dt);
@@ -338,8 +345,7 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
 
   constexpr int cloud_rhs_count = num_constituents + 1;
   View2D cloud_rhs("imex_cloud_rhs", op.nlev(), cloud_rhs_count);
-  View2D cloud_rhs_original("imex_cloud_rhs_original", op.nlev(),
-                            cloud_rhs_count);
+  View2D cloud_rhs_original;
   for (std::size_t k = 0; k < op.nlev(); ++k) {
     cloud_rhs(k, 0) = initial.droplet_number[k] + dt * droplet_source[k];
     for (int j = 0; j < num_constituents; ++j) {
@@ -351,19 +357,31 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     result.message = "IMEX cloud right-hand side contains a nonfinite value";
     return result;
   }
-  Kokkos::deep_copy(cloud_rhs_original, cloud_rhs);
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    cloud_rhs_original = View2D("imex_cloud_rhs_original", op.nlev(),
+                                cloud_rhs_count);
+    Kokkos::deep_copy(cloud_rhs_original, cloud_rhs);
+    stopwatch.phase(&AdvancePhaseTimings::setup);
+  }
+  stopwatch.phase(&AdvancePhaseTimings::solve);
   solve(cloud, cloud_rhs);
+  stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(cloud_rhs)) {
     result.message = "IMEX cloud solve produced a nonfinite value";
     return result;
   }
   Real matrix_residual = 0;
-  if (!normalized_matrix_residual(cloud, cloud_rhs, cloud_rhs_original,
-                                  matrix_residual)) {
-    result.message = "IMEX cloud residual is nonfinite";
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    if (!normalized_matrix_residual(cloud, cloud_rhs, cloud_rhs_original,
+                                    matrix_residual)) {
+      result.message = "IMEX cloud residual is nonfinite";
+      return result;
+    }
+    result.diagnostics.normalized_matrix_residual = matrix_residual;
+    stopwatch.phase(&AdvancePhaseTimings::update);
   }
-  result.diagnostics.normalized_matrix_residual = matrix_residual;
 
   for (std::size_t k = 0; k < op.nlev(); ++k) {
     result.state.droplet_number[k] = cloud_rhs(k, 0);
@@ -374,8 +392,7 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
 
   View2D interstitial_rhs("imex_interstitial_rhs", op.nlev(),
                           num_constituents);
-  View2D interstitial_rhs_original("imex_interstitial_rhs_original",
-                                   op.nlev(), num_constituents);
+  View2D interstitial_rhs_original;
   for (int j = 0; j < num_constituents; ++j) {
     const auto return_and_mixing = apply_interstitial_operator(
         std::vector<Real>(op.nlev(), 0), result.state.cloudborne[j], op);
@@ -390,22 +407,35 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
         "IMEX interstitial right-hand side contains a nonfinite value";
     return result;
   }
-  Kokkos::deep_copy(interstitial_rhs_original, interstitial_rhs);
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    interstitial_rhs_original =
+        View2D("imex_interstitial_rhs_original", op.nlev(),
+               num_constituents);
+    Kokkos::deep_copy(interstitial_rhs_original, interstitial_rhs);
+    stopwatch.phase(&AdvancePhaseTimings::setup);
+  }
+  stopwatch.phase(&AdvancePhaseTimings::solve);
   solve(interstitial, interstitial_rhs);
+  stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(interstitial_rhs)) {
     result.message = "IMEX interstitial solve produced a nonfinite value";
     return result;
   }
-  matrix_residual = 0;
-  if (!normalized_matrix_residual(interstitial, interstitial_rhs,
-                                  interstitial_rhs_original,
-                                  matrix_residual)) {
-    result.message = "IMEX interstitial residual is nonfinite";
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    matrix_residual = 0;
+    if (!normalized_matrix_residual(interstitial, interstitial_rhs,
+                                    interstitial_rhs_original,
+                                    matrix_residual)) {
+      result.message = "IMEX interstitial residual is nonfinite";
+      return result;
+    }
+    result.diagnostics.normalized_matrix_residual =
+        std::max(result.diagnostics.normalized_matrix_residual,
+                 matrix_residual);
+    stopwatch.phase(&AdvancePhaseTimings::update);
   }
-  result.diagnostics.normalized_matrix_residual =
-      std::max(result.diagnostics.normalized_matrix_residual,
-               matrix_residual);
   for (std::size_t k = 0; k < op.nlev(); ++k) {
     for (int j = 0; j < num_constituents; ++j) {
       result.state.interstitial[j][k] = interstitial_rhs(k, j);
@@ -431,32 +461,36 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                           .cloudborne_material_negative_count);
   }
 
-  Real physical_residual = 0;
-  if (!update_physical_residual(
-          initial.droplet_number, result.state.droplet_number,
-          droplet_source, op, dt, false, nullptr, physical_residual)) {
-    result.message = "IMEX physical residual is nonfinite";
-    return result;
-  }
-  for (int j = 0; j < num_constituents; ++j) {
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    Real physical_residual = 0;
     if (!update_physical_residual(
-            initial.cloudborne[j], result.state.cloudborne[j], sources[j],
-            op, dt, false, nullptr, physical_residual) ||
-        !update_physical_residual(
-            initial.interstitial[j], result.state.interstitial[j],
-            sources[j], op, dt, true, &result.state.cloudborne[j],
-            physical_residual)) {
+            initial.droplet_number, result.state.droplet_number,
+            droplet_source, op, dt, false, nullptr, physical_residual)) {
       result.message = "IMEX physical residual is nonfinite";
       return result;
     }
-  }
-  result.diagnostics.normalized_physical_residual = physical_residual;
-  result.diagnostics.normalized_residual =
-      std::max(result.diagnostics.normalized_matrix_residual,
-               result.diagnostics.normalized_physical_residual);
-  if (!std::isfinite(result.diagnostics.normalized_residual)) {
-    result.message = "IMEX normalized residual is nonfinite";
-    return result;
+    for (int j = 0; j < num_constituents; ++j) {
+      if (!update_physical_residual(
+              initial.cloudborne[j], result.state.cloudborne[j], sources[j],
+              op, dt, false, nullptr, physical_residual) ||
+          !update_physical_residual(
+              initial.interstitial[j], result.state.interstitial[j],
+              sources[j], op, dt, true, &result.state.cloudborne[j],
+              physical_residual)) {
+        result.message = "IMEX physical residual is nonfinite";
+        return result;
+      }
+    }
+    result.diagnostics.normalized_physical_residual = physical_residual;
+    result.diagnostics.normalized_residual =
+        std::max(result.diagnostics.normalized_matrix_residual,
+                 result.diagnostics.normalized_physical_residual);
+    if (!std::isfinite(result.diagnostics.normalized_residual)) {
+      result.message = "IMEX normalized residual is nonfinite";
+      return result;
+    }
+    stopwatch.phase(&AdvancePhaseTimings::update);
   }
   if (result.diagnostics.positivity_failure) {
     result.message = "material negative value in IMEX solution";
@@ -466,6 +500,13 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                                     result.message)) {
     return result;
   }
+  if (!control.collect_detailed_diagnostics) {
+    result.ok = true;
+    result.message = "ok";
+    return result;
+  }
+
+  stopwatch.phase(&AdvancePhaseTimings::diagnostics);
   if (!checked_column_ledgers(result.state, op.pressure_weight,
                               result.diagnostics.final_ledger,
                               result.message)) {

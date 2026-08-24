@@ -1,4 +1,5 @@
 #include "ndrop_integrator.hpp"
+#include "ndrop_phase_timer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -590,7 +591,10 @@ bool normalized_ledger_delta(const Real initial, const Real delta,
 
 AdvanceResult advance_backward_euler(const State &initial,
                                      const OperatorData &data,
-                                     const Real dt) {
+                                     const Real dt,
+                                     const AdvanceControl &control) {
+  PhaseStopwatch stopwatch(control.phase_timings);
+  stopwatch.phase(&AdvancePhaseTimings::setup);
   AdvanceResult result;
   result.state = State(initial.nlev());
   if (!validate(initial, data, dt, result.message)) {
@@ -607,10 +611,14 @@ AdvanceResult advance_backward_euler(const State &initial,
   result.diagnostics.max_inverse_mixing_time = op.max_inverse_mixing_time;
   result.diagnostics.first_level_controller_rate =
       op.first_level_controller_rate;
-  if (!checked_column_ledgers(initial, op.pressure_weight,
-                              result.diagnostics.initial_ledger,
-                              result.message)) {
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    if (!checked_column_ledgers(initial, op.pressure_weight,
+                                result.diagnostics.initial_ledger,
+                                result.message)) {
+      return result;
+    }
+    stopwatch.phase(&AdvancePhaseTimings::setup);
   }
 
   std::vector<MatrixFamily> families;
@@ -639,17 +647,20 @@ AdvanceResult advance_backward_euler(const State &initial,
           "Backward Euler block matrix contains a nonfinite coefficient";
       return result;
     }
+    stopwatch.phase(&AdvancePhaseTimings::factorization);
     if (!factor_block_system(family.system, family.factorization)) {
       result.message = "Backward Euler block factorization pivot failure";
       return result;
     }
     ++result.diagnostics.block_factorization_count;
     for (const int j : family.constituents) {
+      stopwatch.phase(&AdvancePhaseTimings::setup);
       std::vector<Vec2> rhs(op.nlev());
       for (std::size_t k = 0; k < op.nlev(); ++k) {
         rhs[k] = {initial.cloudborne[j][k], initial.interstitial[j][k]};
       }
       std::vector<Vec2> solution;
+      stopwatch.phase(&AdvancePhaseTimings::solve);
       if (!solve_block_system(family.system, family.factorization, rhs,
                               solution)) {
         result.message =
@@ -657,11 +668,15 @@ AdvanceResult advance_backward_euler(const State &initial,
         return result;
       }
       ++result.diagnostics.block_rhs_solve_count;
-      if (!normalized_block_residual(family.system, solution, rhs,
-                                     matrix_residual)) {
-        result.message = "Backward Euler block residual is nonfinite";
-        return result;
+      if (control.collect_detailed_diagnostics) {
+        stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+        if (!normalized_block_residual(family.system, solution, rhs,
+                                       matrix_residual)) {
+          result.message = "Backward Euler block residual is nonfinite";
+          return result;
+        }
       }
+      stopwatch.phase(&AdvancePhaseTimings::update);
       for (std::size_t k = 0; k < op.nlev(); ++k) {
         result.state.cloudborne[j][k] = solution[k].x;
         result.state.interstitial[j][k] = solution[k].y;
@@ -696,6 +711,7 @@ AdvanceResult advance_backward_euler(const State &initial,
     }
   }
 
+  stopwatch.phase(&AdvancePhaseTimings::setup);
   const auto droplet_source = droplet_activation_source(result.state, op);
   if (!finite_values(droplet_source)) {
     result.message =
@@ -709,11 +725,13 @@ AdvanceResult advance_backward_euler(const State &initial,
     return result;
   }
   ScalarFactorization droplet_factorization;
+  stopwatch.phase(&AdvancePhaseTimings::factorization);
   if (!factor_scalar_system(droplet_system, droplet_factorization)) {
     result.message = "Backward Euler scalar factorization pivot failure";
     return result;
   }
   ++result.diagnostics.scalar_factorization_count;
+  stopwatch.phase(&AdvancePhaseTimings::setup);
   std::vector<Real> droplet_rhs(op.nlev(), 0);
   for (std::size_t k = 0; k < op.nlev(); ++k) {
     droplet_rhs[k] = initial.droplet_number[k] + dt * droplet_source[k];
@@ -723,6 +741,7 @@ AdvanceResult advance_backward_euler(const State &initial,
       return result;
     }
   }
+  stopwatch.phase(&AdvancePhaseTimings::solve);
   if (!solve_scalar_system(droplet_system, droplet_factorization,
                            droplet_rhs, result.state.droplet_number)) {
     result.message =
@@ -730,55 +749,63 @@ AdvanceResult advance_backward_euler(const State &initial,
     return result;
   }
   ++result.diagnostics.scalar_rhs_solve_count;
-  if (!normalized_scalar_residual(droplet_system,
-                                  result.state.droplet_number, droplet_rhs,
-                                  matrix_residual)) {
-    result.message = "Backward Euler droplet residual is nonfinite";
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    if (!normalized_scalar_residual(droplet_system,
+                                    result.state.droplet_number, droplet_rhs,
+                                    matrix_residual)) {
+      result.message = "Backward Euler droplet residual is nonfinite";
+      return result;
+    }
+    result.diagnostics.normalized_matrix_residual = matrix_residual;
   }
-  result.diagnostics.normalized_matrix_residual = matrix_residual;
+  stopwatch.phase(&AdvancePhaseTimings::update);
   update_positivity(initial.droplet_number, result.state.droplet_number,
                     result.diagnostics,
                     result.diagnostics.droplet_roundoff_negative_count,
                     result.diagnostics.droplet_material_negative_count,
                     result.diagnostics.droplet_raw_minimum);
 
-  std::array<std::vector<Real>, num_constituents> aerosol_sources;
-  for (int j = 0; j < num_constituents; ++j) {
-    aerosol_sources[j] = aerosol_activation_source(result.state, op, j);
-    if (!finite_values(aerosol_sources[j])) {
-      result.message =
-          "Backward Euler aerosol activation source contains a nonfinite value";
-      return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    std::array<std::vector<Real>, num_constituents> aerosol_sources;
+    for (int j = 0; j < num_constituents; ++j) {
+      aerosol_sources[j] = aerosol_activation_source(result.state, op, j);
+      if (!finite_values(aerosol_sources[j])) {
+        result.message = "Backward Euler aerosol activation source contains a "
+                         "nonfinite value";
+        return result;
+      }
     }
-  }
-  Real physical_residual = 0;
-  if (!update_physical_residual(
-          initial.droplet_number, result.state.droplet_number,
-          droplet_source, op, dt, false, nullptr, physical_residual)) {
-    result.message = "Backward Euler physical residual is nonfinite";
-    return result;
-  }
-  for (int j = 0; j < num_constituents; ++j) {
+    Real physical_residual = 0;
     if (!update_physical_residual(
-            initial.cloudborne[j], result.state.cloudborne[j],
-            aerosol_sources[j], op, dt, false, nullptr,
-            physical_residual) ||
-        !update_physical_residual(
-            initial.interstitial[j], result.state.interstitial[j],
-            aerosol_sources[j], op, dt, true,
-            &result.state.cloudborne[j], physical_residual)) {
+            initial.droplet_number, result.state.droplet_number,
+            droplet_source, op, dt, false, nullptr, physical_residual)) {
       result.message = "Backward Euler physical residual is nonfinite";
       return result;
     }
-  }
-  result.diagnostics.normalized_physical_residual = physical_residual;
-  result.diagnostics.normalized_residual =
-      std::max(result.diagnostics.normalized_matrix_residual,
-               result.diagnostics.normalized_physical_residual);
-  if (!finite(result.diagnostics.normalized_residual)) {
-    result.message = "Backward Euler normalized residual is nonfinite";
-    return result;
+    for (int j = 0; j < num_constituents; ++j) {
+      if (!update_physical_residual(
+              initial.cloudborne[j], result.state.cloudborne[j],
+              aerosol_sources[j], op, dt, false, nullptr,
+              physical_residual) ||
+          !update_physical_residual(
+              initial.interstitial[j], result.state.interstitial[j],
+              aerosol_sources[j], op, dt, true,
+              &result.state.cloudborne[j], physical_residual)) {
+        result.message = "Backward Euler physical residual is nonfinite";
+        return result;
+      }
+    }
+    result.diagnostics.normalized_physical_residual = physical_residual;
+    result.diagnostics.normalized_residual =
+        std::max(result.diagnostics.normalized_matrix_residual,
+                 result.diagnostics.normalized_physical_residual);
+    if (!finite(result.diagnostics.normalized_residual)) {
+      result.message = "Backward Euler normalized residual is nonfinite";
+      return result;
+    }
+    stopwatch.phase(&AdvancePhaseTimings::update);
   }
   if (branch_changed) {
     result.message =
@@ -793,6 +820,13 @@ AdvanceResult advance_backward_euler(const State &initial,
                                     result.message)) {
     return result;
   }
+  if (!control.collect_detailed_diagnostics) {
+    result.ok = true;
+    result.message = "ok";
+    return result;
+  }
+
+  stopwatch.phase(&AdvancePhaseTimings::diagnostics);
   if (!checked_column_ledgers(result.state, op.pressure_weight,
                               result.diagnostics.final_ledger,
                               result.message)) {

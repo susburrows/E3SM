@@ -111,6 +111,25 @@ struct AdvanceResult {
   AdvanceDiagnostics diagnostics;
 };
 
+struct AdvancePhaseTimings {
+  // All fields are elapsed wall-clock seconds from a steady clock.
+  Real setup = 0;
+  Real factorization = 0;
+  Real solve = 0;
+  Real update = 0;
+  Real diagnostics = 0;
+};
+
+struct AdvanceControl {
+  // Detailed residual and ledger diagnostics are required for validation but
+  // excluded from the primary performance timing. Positivity handling,
+  // Forward Euler clipping, finite checks, and the state transition remain on.
+  bool collect_detailed_diagnostics = true;
+  // A nonnull pointer enables phase instrumentation in a matched diagnostic
+  // pass. The uninstrumented path makes no steady-clock calls.
+  AdvancePhaseTimings *phase_timings = nullptr;
+};
+
 struct ReferenceOptions {
   // Dimensionless embedded-error tolerance; must be finite and positive.
   Real relative_tolerance = 1e-12;
@@ -189,11 +208,12 @@ bool apply_zero_cloud_postprocess(State &state,
 
 AdvanceResult advance_forward_euler(const State &initial,
                                     const OperatorData &data, Real dt,
-                                    const ForwardEulerOptions &options = {});
+                                    const ForwardEulerOptions &options = {},
+                                    const AdvanceControl &control = {});
 
 // Implemented in ndrop_imex.cpp and linked only by the EKAT-backed test target.
 AdvanceResult advance_imex(const State &initial, const OperatorData &data,
-                           Real dt);
+                           Real dt, const AdvanceControl &control = {});
 
 // Test-only access to finite-value checkers whose failure branches cannot be
 // reached from a valid M-matrix and finite right-hand side.
@@ -201,7 +221,8 @@ bool imex_nonfinite_probe_is_rejected(ImexFiniteProbe probe);
 
 // Implemented in ndrop_backward_euler.cpp by the standalone host-only gate.
 AdvanceResult advance_backward_euler(const State &initial,
-                                     const OperatorData &data, Real dt);
+                                     const OperatorData &data, Real dt,
+                                     const AdvanceControl &control = {});
 
 // Test-only access to deterministic failure branches that cannot be reached
 // from a valid conservative M-matrix with finite nonnegative input.

@@ -61,6 +61,40 @@ target_include_directories(
 configure_ndrop_target(test_cross_scheme)
 add_test(NAME ndrop_cross_scheme COMMAND test_cross_scheme)
 
+add_executable(test_benchmark_support ndrop_integrator.cpp ndrop_imex.cpp
+               ndrop_backward_euler.cpp ndrop_benchmark.cpp
+               test_benchmark_support.cpp)
+target_include_directories(
+  test_benchmark_support SYSTEM PRIVATE
+  "${EKAT_SOURCE}/src/algorithm"
+  "${EKAT_SOURCE}/src/core"
+  "${EKAT_SOURCE}/src/kokkos"
+  "${EKAT_SOURCE}/src/pack")
+configure_ndrop_target(test_benchmark_support)
+add_test(NAME ndrop_benchmark_support COMMAND test_benchmark_support)
+
+add_executable(benchmark_ndrop_integrators ndrop_integrator.cpp
+               ndrop_imex.cpp ndrop_backward_euler.cpp ndrop_benchmark.cpp
+               benchmark_ndrop_integrators.cpp)
+target_include_directories(
+  benchmark_ndrop_integrators SYSTEM PRIVATE
+  "${EKAT_SOURCE}/src/algorithm"
+  "${EKAT_SOURCE}/src/core"
+  "${EKAT_SOURCE}/src/kokkos"
+  "${EKAT_SOURCE}/src/pack")
+configure_ndrop_target(benchmark_ndrop_integrators)
+add_test(
+  NAME ndrop_benchmark_smoke
+  COMMAND benchmark_ndrop_integrators --smoke --output
+          "${CMAKE_CURRENT_BINARY_DIR}/benchmark_smoke.csv")
+add_test(
+  NAME ndrop_benchmark_exclusion
+  COMMAND benchmark_ndrop_integrators --output
+          "${CMAKE_CURRENT_BINARY_DIR}/benchmark_exclusion.csv"
+          --case-start 24291 --case-count 9 --warmups 0
+          --min-repetitions 1 --max-repetitions 1
+          --bootstrap-resamples 10 --progress-every 0)
+
 if(NDROP_BUILD_EXACT_ADAPTER)
   if(NOT EXISTS "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in")
     message(FATAL_ERROR

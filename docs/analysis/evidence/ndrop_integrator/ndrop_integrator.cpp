@@ -1,4 +1,5 @@
 #include "ndrop_integrator.hpp"
+#include "ndrop_phase_timer.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -589,7 +590,10 @@ bool apply_zero_cloud_postprocess(
 
 AdvanceResult advance_forward_euler(const State &initial,
                                     const OperatorData &data, const Real dt,
-                                    const ForwardEulerOptions &options) {
+                                    const ForwardEulerOptions &options,
+                                    const AdvanceControl &control) {
+  PhaseStopwatch stopwatch(control.phase_timings);
+  stopwatch.phase(&AdvancePhaseTimings::setup);
   AdvanceResult result;
   result.state = State(initial.nlev());
   if (options.forced_substeps < 0) {
@@ -620,16 +624,21 @@ AdvanceResult advance_forward_euler(const State &initial,
       op.max_inverse_mixing_time;
   result.diagnostics.first_level_controller_rate =
       op.first_level_controller_rate;
-  if (!checked_column_ledgers(initial, op.pressure_weight,
-                              result.diagnostics.initial_ledger,
-                              result.message)) {
-    return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    if (!checked_column_ledgers(initial, op.pressure_weight,
+                                result.diagnostics.initial_ledger,
+                                result.message)) {
+      return result;
+    }
+    stopwatch.phase(&AdvancePhaseTimings::setup);
   }
 
   std::array<State, 2> buffers = {initial, State(initial.nlev())};
   int old_index = 0;
   int new_index = 1;
   const Real substep = dt / nsubmix;
+  stopwatch.phase(&AdvancePhaseTimings::update);
 
   for (int step = 0; step < nsubmix; ++step) {
     if (step > 0) {
@@ -660,12 +669,16 @@ AdvanceResult advance_forward_euler(const State &initial,
       result.message = "Forward Euler update produced a nonfinite value";
       return result;
     }
-    if (!update_explicit_physical_residual(
-            old.droplet_number, raw_droplet, nc_source, op, substep,
-            false, nullptr,
-            result.diagnostics.normalized_physical_residual)) {
-      result.message = "Forward Euler physical residual is nonfinite";
-      return result;
+    if (control.collect_detailed_diagnostics) {
+      stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+      if (!update_explicit_physical_residual(
+              old.droplet_number, raw_droplet, nc_source, op, substep,
+              false, nullptr,
+              result.diagnostics.normalized_physical_residual)) {
+        result.message = "Forward Euler physical residual is nonfinite";
+        return result;
+      }
+      stopwatch.phase(&AdvancePhaseTimings::update);
     }
     classify_negative_values(
         old.droplet_number, raw_droplet, result.diagnostics,
@@ -706,16 +719,20 @@ AdvanceResult advance_forward_euler(const State &initial,
         result.message = "Forward Euler update produced a nonfinite value";
         return result;
       }
-      if (!update_explicit_physical_residual(
-              old.cloudborne[j], raw_cloud, sources[j], op, substep,
-              false, nullptr,
-              result.diagnostics.normalized_physical_residual) ||
-          !update_explicit_physical_residual(
-              old.interstitial[j], raw_interstitial, sources[j], op,
-              substep, true, &old.cloudborne[j],
-              result.diagnostics.normalized_physical_residual)) {
-        result.message = "Forward Euler physical residual is nonfinite";
-        return result;
+      if (control.collect_detailed_diagnostics) {
+        stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+        if (!update_explicit_physical_residual(
+                old.cloudborne[j], raw_cloud, sources[j], op, substep,
+                false, nullptr,
+                result.diagnostics.normalized_physical_residual) ||
+            !update_explicit_physical_residual(
+                old.interstitial[j], raw_interstitial, sources[j], op,
+                substep, true, &old.cloudborne[j],
+                result.diagnostics.normalized_physical_residual)) {
+          result.message = "Forward Euler physical residual is nonfinite";
+          return result;
+        }
+        stopwatch.phase(&AdvancePhaseTimings::update);
       }
       classify_negative_values(
           old.cloudborne[j], raw_cloud, result.diagnostics,
@@ -757,15 +774,20 @@ AdvanceResult advance_forward_euler(const State &initial,
     }
   }
 
-  for (int j = 0; j < num_constituents; ++j) {
-    const auto &field_diag = result.diagnostics.field_clipping[j];
-    Real delta = 0;
-    if (!checked_add(field_diag.interstitial_weighted_deficit,
-                     field_diag.cloudborne_weighted_deficit, delta)) {
-      result.message = "Forward Euler clipping ledger diagnostic overflowed";
-      return result;
+  if (control.collect_detailed_diagnostics) {
+    stopwatch.phase(&AdvancePhaseTimings::diagnostics);
+    for (int j = 0; j < num_constituents; ++j) {
+      const auto &field_diag = result.diagnostics.field_clipping[j];
+      Real delta = 0;
+      if (!checked_add(field_diag.interstitial_weighted_deficit,
+                       field_diag.cloudborne_weighted_deficit, delta)) {
+        result.message =
+            "Forward Euler clipping ledger diagnostic overflowed";
+        return result;
+      }
+      result.diagnostics.clipping_ledger_delta[j] = delta;
     }
-    result.diagnostics.clipping_ledger_delta[j] = delta;
+    stopwatch.phase(&AdvancePhaseTimings::update);
   }
   result.diagnostics.final_buffer = new_index;
   result.state = buffers[new_index];
@@ -773,6 +795,14 @@ AdvanceResult advance_forward_euler(const State &initial,
                                     result.message)) {
     return result;
   }
+  if (!control.collect_detailed_diagnostics) {
+    result.diagnostics.solution_minimum = result.diagnostics.raw_minimum;
+    result.ok = true;
+    result.message = "ok";
+    return result;
+  }
+
+  stopwatch.phase(&AdvancePhaseTimings::diagnostics);
   if (!checked_column_ledgers(result.state, op.pressure_weight,
                               result.diagnostics.final_ledger,
                               result.message)) {
