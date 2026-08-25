@@ -114,6 +114,18 @@ const char *method_name(const Method method) {
   return "unknown";
 }
 
+const char *linear_phase_mode(const Method method) {
+  switch (method) {
+  case Method::forward_euler:
+    return "none";
+  case Method::imex:
+    return "combined";
+  case Method::backward_euler:
+    return "separate";
+  }
+  return "unknown";
+}
+
 std::vector<Case> required_cases(const bool smoke) {
   if (smoke) {
     return {{0, 16, 8, 4, 0, 0.05, 0.5, Method::forward_euler, 3},
@@ -123,19 +135,19 @@ std::vector<Case> required_cases(const bool smoke) {
 
   constexpr std::array<std::size_t, 9> levels = {1,  2,  3,  16, 32,
                                                   64, 72, 127, 128};
-  constexpr std::array<int, 5> active_pairs = {1, 4, 8, 16, 25};
+  constexpr std::array<int, 5> nonzero_aerosol_pairs = {1, 4, 8, 16, 25};
   constexpr std::array<int, 5> batches = {1, 16, 64, 256, 1024};
   constexpr std::array<Real, 2> mixing = {0.05, 0.5};
   constexpr std::array<Real, 6> intervals = {33.33, 50, 75, 100, 150, 300};
   constexpr std::array<int, 7> fe_substeps = {1, 2, 3, 5, 8, 16, 21};
 
   std::vector<Case> cases;
-  cases.reserve(levels.size() * active_pairs.size() * batches.size() *
+  cases.reserve(levels.size() * nonzero_aerosol_pairs.size() * batches.size() *
                 mixing.size() * intervals.size() *
                 (fe_substeps.size() + 2));
   int id = 0;
   for (const std::size_t nlev : levels) {
-    for (const int pairs : active_pairs) {
+    for (const int pairs : nonzero_aerosol_pairs) {
       for (const int batch : batches) {
         for (std::size_t mixing_index = 0; mixing_index < mixing.size();
              ++mixing_index) {

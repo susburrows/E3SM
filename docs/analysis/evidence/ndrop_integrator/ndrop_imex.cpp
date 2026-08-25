@@ -364,7 +364,7 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     Kokkos::deep_copy(cloud_rhs_original, cloud_rhs);
     stopwatch.phase(&AdvancePhaseTimings::setup);
   }
-  stopwatch.phase(&AdvancePhaseTimings::solve);
+  stopwatch.phase(&AdvancePhaseTimings::combined_factorization_solve);
   solve(cloud, cloud_rhs);
   stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(cloud_rhs)) {
@@ -415,7 +415,7 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     Kokkos::deep_copy(interstitial_rhs_original, interstitial_rhs);
     stopwatch.phase(&AdvancePhaseTimings::setup);
   }
-  stopwatch.phase(&AdvancePhaseTimings::solve);
+  stopwatch.phase(&AdvancePhaseTimings::combined_factorization_solve);
   solve(interstitial, interstitial_rhs);
   stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(interstitial_rhs)) {

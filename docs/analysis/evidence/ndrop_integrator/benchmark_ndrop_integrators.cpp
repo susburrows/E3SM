@@ -41,6 +41,8 @@ using ndrop_test::num_modes;
 struct Arguments {
   bool smoke = false;
   std::string output_path;
+  std::string run_id;
+  std::string phase_samples_output_path;
   int case_start = 0;
   int case_count = std::numeric_limits<int>::max();
   int warmups = 10;
@@ -74,10 +76,10 @@ struct RowResult {
   std::vector<Real> samples;
   std::vector<Real> instrumented_samples;
   std::vector<Real> fence_samples;
-  std::array<std::vector<Real>, 5> phase_samples;
+  std::array<std::vector<Real>, 6> phase_samples;
   BootstrapInterval primary_interval;
   BootstrapInterval instrumented_interval;
-  std::array<Real, 5> phase_medians{};
+  std::array<Real, 6> phase_medians{};
   Real fence_median = 0;
   Real instrumentation_overhead = 0;
   std::uint64_t checksum = 0;
@@ -146,6 +148,18 @@ int parse_nonnegative(const std::string &name, const std::string &value) {
   return static_cast<int>(parsed);
 }
 
+bool valid_run_id(const std::string &run_id) {
+  if (run_id.empty() || run_id.size() > 128) {
+    return false;
+  }
+  return std::all_of(run_id.begin(), run_id.end(), [](const char character) {
+    return (character >= 'A' && character <= 'Z') ||
+           (character >= 'a' && character <= 'z') ||
+           (character >= '0' && character <= '9') || character == '.' ||
+           character == '_' || character == '-';
+  });
+}
+
 Arguments parse_arguments(const int argc, char **argv) {
   Arguments arguments;
   bool repetitions_overridden = false;
@@ -161,6 +175,10 @@ Arguments parse_arguments(const int argc, char **argv) {
       arguments.smoke = true;
     } else if (argument == "--output") {
       arguments.output_path = next_value();
+    } else if (argument == "--run-id") {
+      arguments.run_id = next_value();
+    } else if (argument == "--phase-samples-output") {
+      arguments.phase_samples_output_path = next_value();
     } else if (argument == "--case-start") {
       arguments.case_start = parse_nonnegative(argument, next_value());
     } else if (argument == "--case-count") {
@@ -189,6 +207,20 @@ Arguments parse_arguments(const int argc, char **argv) {
   if (arguments.output_path.empty()) {
     throw std::invalid_argument("--output is required");
   }
+  if (arguments.run_id.empty()) {
+    throw std::invalid_argument("--run-id is required");
+  }
+  if (!valid_run_id(arguments.run_id)) {
+    throw std::invalid_argument(
+        "--run-id must match [A-Za-z0-9._-]{1,128}");
+  }
+  if (arguments.phase_samples_output_path.empty()) {
+    throw std::invalid_argument("--phase-samples-output is required");
+  }
+  if (arguments.phase_samples_output_path == arguments.output_path) {
+    throw std::invalid_argument(
+        "--output and --phase-samples-output must be different paths");
+  }
   if (arguments.smoke && !repetitions_overridden) {
     arguments.warmups = 1;
     arguments.minimum_repetitions = 3;
@@ -208,7 +240,8 @@ State make_initial_state(const Case &benchmark_case) {
   State state(benchmark_case.nlev);
   for (std::size_t level = 0; level < benchmark_case.nlev; ++level) {
     state.droplet_number[level] = 4 + 0.01 * level;
-    for (int field = 0; field < benchmark_case.active_pairs; ++field) {
+    for (int field = 0;
+         field < benchmark_case.nonzero_aerosol_pairs; ++field) {
       state.interstitial[field][level] =
           1 + 0.01 * field + 0.002 * level;
       state.cloudborne[field][level] =
@@ -291,6 +324,7 @@ void add_phase(AdvancePhaseTimings &sum,
   sum.setup += value.setup;
   sum.factorization += value.factorization;
   sum.solve += value.solve;
+  sum.combined_factorization_solve += value.combined_factorization_solve;
   sum.update += value.update;
   sum.diagnostics += value.diagnostics;
 }
@@ -339,6 +373,8 @@ BatchMeasurement run_batch(const Case &benchmark_case,
     measurement.phases_per_column.factorization =
         phase_sum.factorization / batch;
     measurement.phases_per_column.solve = phase_sum.solve / batch;
+    measurement.phases_per_column.combined_factorization_solve =
+        phase_sum.combined_factorization_solve / batch;
     measurement.phases_per_column.update = phase_sum.update / batch;
     measurement.phases_per_column.diagnostics =
         phase_sum.diagnostics / batch;
@@ -351,7 +387,8 @@ BatchMeasurement run_batch(const Case &benchmark_case,
 }
 
 bool same_group(const Case &lhs, const Case &rhs) {
-  return lhs.nlev == rhs.nlev && lhs.active_pairs == rhs.active_pairs &&
+  return lhs.nlev == rhs.nlev &&
+         lhs.nonzero_aerosol_pairs == rhs.nonzero_aerosol_pairs &&
          lhs.batch_size == rhs.batch_size &&
          lhs.mixing_index == rhs.mixing_index && lhs.dt == rhs.dt;
 }
@@ -558,8 +595,10 @@ void measure_group(std::vector<RowResult> &rows, const Arguments &arguments) {
       row.phase_samples[1].push_back(
           measured.phases_per_column.factorization);
       row.phase_samples[2].push_back(measured.phases_per_column.solve);
-      row.phase_samples[3].push_back(measured.phases_per_column.update);
-      row.phase_samples[4].push_back(measured.phases_per_column.diagnostics);
+      row.phase_samples[3].push_back(
+          measured.phases_per_column.combined_factorization_solve);
+      row.phase_samples[4].push_back(measured.phases_per_column.update);
+      row.phase_samples[5].push_back(measured.phases_per_column.diagnostics);
       combine_checksum(row.checksum, measured.checksum);
     }
   }
@@ -608,8 +647,11 @@ std::string platform_name() {
 }
 
 void write_header(std::ofstream &output) {
-  output << "case_id,nlev,active_pairs,transported_fields,batch_size,"
+  output << "artifact_schema,run_id,case_id,nlev,nonzero_aerosol_pairs,"
+            "nonzero_state_fields,executed_aerosol_pairs,"
+            "executed_transport_fields,batch_size,"
             "mixing_index,mixing_scale,dt,method,forced_fe_substeps,"
+            "linear_phase_mode,"
             "validation_ok,eligible,exclusion_reason,message,repetitions,"
             "richardson_ok,richardson_message,screening_error,"
             "richardson_maximum_weighted_l1,richardson_maximum_linf,"
@@ -620,6 +662,7 @@ void write_header(std::ofstream &output) {
             "instrumented_ci95_lower,instrumented_ci95_upper,"
             "instrumentation_overhead,setup_seconds_per_column,"
             "factorization_seconds_per_column,solve_seconds_per_column,"
+            "combined_factorization_solve_seconds_per_column,"
             "update_seconds_per_column,diagnostics_seconds_per_column,"
             "fence_seconds_per_column,clipping_count,material_negative_count,"
             "block_factorizations,block_rhs_solves,scalar_factorizations,"
@@ -628,6 +671,16 @@ void write_header(std::ofstream &output) {
             "warmups,minimum_repetitions,maximum_repetitions,"
             "bootstrap_resamples,raw_samples_seconds_per_column,"
             "instrumented_samples_seconds_per_column\n";
+}
+
+void write_phase_header(std::ofstream &output) {
+  output << "artifact_schema,run_id,case_id,method,linear_phase_mode,"
+            "instrumented_repetition,instrumented_seconds_per_column,"
+            "setup_seconds_per_column,factorization_seconds_per_column,"
+            "solve_seconds_per_column,"
+            "combined_factorization_solve_seconds_per_column,"
+            "update_seconds_per_column,diagnostics_seconds_per_column,"
+            "fence_seconds_per_column\n";
 }
 
 void write_row(std::ofstream &output, const RowResult &row,
@@ -645,12 +698,29 @@ void write_row(std::ofstream &output, const RowResult &row,
   auto timing = [&row](const Real value) {
     return row.samples.empty() ? std::string{} : real_text(value);
   };
-  output << item.id << ',' << item.nlev << ',' << item.active_pairs << ','
-         << 1 + 2 * item.active_pairs << ',' << item.batch_size << ','
+  const auto linear_timing = [&row, &item](const std::size_t phase) {
+    if (row.samples.empty()) {
+      return std::string{};
+    }
+    const bool available =
+        (item.method == Method::imex && phase == 3) ||
+        (item.method == Method::backward_euler && (phase == 1 || phase == 2));
+    return available ? real_text(row.phase_medians[phase]) : std::string{};
+  };
+  output << "ndrop_summary_v2";
+  field(arguments.run_id);
+  output << ',' << item.id << ',' << item.nlev << ','
+         << item.nonzero_aerosol_pairs << ','
+         << 1 + 2 * item.nonzero_aerosol_pairs << ','
+         << ndrop_test::benchmark::executed_aerosol_pairs << ','
+         << ndrop_test::benchmark::executed_transport_fields << ','
+         << item.batch_size << ','
          << item.mixing_index << ',' << real_text(item.mixing_scale) << ','
          << real_text(item.dt);
   field(ndrop_test::benchmark::method_name(item.method));
-  output << ',' << item.forced_fe_substeps << ','
+  output << ',' << item.forced_fe_substeps;
+  field(ndrop_test::benchmark::linear_phase_mode(item.method));
+  output << ','
          << (row.validation_ok ? "true" : "false") << ','
          << (row.eligible ? "true" : "false");
   field(row.exclusion_reason);
@@ -684,10 +754,10 @@ void write_row(std::ofstream &output, const RowResult &row,
          << timing(row.instrumented_interval.upper) << ','
          << timing(row.instrumentation_overhead) << ','
          << timing(row.phase_medians[0]) << ','
-         << timing(row.phase_medians[1]) << ','
-         << timing(row.phase_medians[2]) << ','
-         << timing(row.phase_medians[3]) << ','
+         << linear_timing(1) << ',' << linear_timing(2) << ','
+         << linear_timing(3) << ','
          << timing(row.phase_medians[4]) << ','
+         << timing(row.phase_medians[5]) << ','
          << timing(row.fence_median) << ','
          << row.validation_diagnostics.clipping_count << ','
          << row.validation_diagnostics.material_negative_count << ','
@@ -710,6 +780,47 @@ void write_row(std::ofstream &output, const RowResult &row,
   output << '\n';
 }
 
+void write_phase_rows(std::ofstream &output, const RowResult &row,
+                      const Arguments &arguments) {
+  const std::size_t repetitions = row.instrumented_samples.size();
+  if (row.fence_samples.size() != repetitions) {
+    throw std::logic_error("instrumented and fence sample counts differ");
+  }
+  for (const auto &samples : row.phase_samples) {
+    if (samples.size() != repetitions) {
+      throw std::logic_error("instrumented and phase sample counts differ");
+    }
+  }
+  const Method method = row.benchmark_case.method;
+  const auto linear_sample = [&row, method](const std::size_t phase,
+                                            const std::size_t repetition) {
+    const bool available =
+        (method == Method::imex && phase == 3) ||
+        (method == Method::backward_euler && (phase == 1 || phase == 2));
+    return available ? real_text(row.phase_samples[phase][repetition])
+                     : std::string{};
+  };
+  for (std::size_t repetition = 0; repetition < repetitions; ++repetition) {
+    auto field = [&output](const std::string &value) {
+      output << ',' << csv_escape(value);
+    };
+    output << "ndrop_phase_samples_v1";
+    field(arguments.run_id);
+    output << ',' << row.benchmark_case.id;
+    field(ndrop_test::benchmark::method_name(method));
+    field(ndrop_test::benchmark::linear_phase_mode(method));
+    output << ',' << repetition << ','
+           << real_text(row.instrumented_samples[repetition]) << ','
+           << real_text(row.phase_samples[0][repetition]) << ','
+           << linear_sample(1, repetition) << ','
+           << linear_sample(2, repetition) << ','
+           << linear_sample(3, repetition) << ','
+           << real_text(row.phase_samples[4][repetition]) << ','
+           << real_text(row.phase_samples[5][repetition]) << ','
+           << real_text(row.fence_samples[repetition]) << '\n';
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -723,7 +834,13 @@ int main(int argc, char **argv) {
         throw std::runtime_error("cannot open benchmark output: " +
                                  arguments.output_path);
       }
+      std::ofstream phase_output(arguments.phase_samples_output_path);
+      if (!phase_output) {
+        throw std::runtime_error("cannot open phase-samples output: " +
+                                 arguments.phase_samples_output_path);
+      }
       write_header(output);
+      write_phase_header(phase_output);
       std::size_t rows_written = 0;
       std::size_t invalid_rows = 0;
       for (std::size_t group_index = 0; group_index < groups.size();
@@ -738,6 +855,7 @@ int main(int argc, char **argv) {
         measure_group(rows, arguments);
         for (const RowResult &row : rows) {
           write_row(output, row, arguments);
+          write_phase_rows(phase_output, row, arguments);
           ++rows_written;
           if (!row.validation_ok) {
             ++invalid_rows;
@@ -747,6 +865,10 @@ int main(int argc, char **argv) {
         if (!output) {
           throw std::runtime_error("benchmark output write failed");
         }
+        phase_output.flush();
+        if (!phase_output) {
+          throw std::runtime_error("phase-samples output write failed");
+        }
         if (arguments.progress_every > 0 &&
             ((group_index + 1) %
                  static_cast<std::size_t>(arguments.progress_every) ==
@@ -755,6 +877,14 @@ int main(int argc, char **argv) {
           std::cerr << "PROGRESS groups=" << group_index + 1 << '/'
                     << groups.size() << " rows=" << rows_written << '\n';
         }
+      }
+      output.close();
+      if (!output) {
+        throw std::runtime_error("benchmark output close failed");
+      }
+      phase_output.close();
+      if (!phase_output) {
+        throw std::runtime_error("phase-samples output close failed");
       }
       std::cout << "RESULT rows=" << rows_written
                 << " invalid=" << invalid_rows << " failed=0\n";

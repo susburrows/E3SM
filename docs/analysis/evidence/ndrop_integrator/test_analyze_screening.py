@@ -8,10 +8,13 @@ import unittest
 from analyze_screening import (
     BreakEvenStatus,
     ExclusionReason,
+    PhaseDiagnostics,
     SelectionStatus,
     ScreeningInputError,
+    TimingEstimate,
     bootstrap_median_interval,
     deterministic_groups,
+    ingest_paired_artifacts,
     ingest_rows,
     interpolate_break_even,
     select_measured_targets,
@@ -21,14 +24,20 @@ from analyze_screening import (
 
 def _valid_row(**updates: object) -> dict:
     row = {
+        "artifact_schema": "ndrop_summary_v2",
+        "run_id": "task5-remediated-20260825T120000Z-61ae8249af0e",
         "case_id": "7",
         "nlev": "3",
-        "transported_fields": "9",
+        "nonzero_aerosol_pairs": "4",
+        "nonzero_state_fields": "9",
+        "executed_aerosol_pairs": "25",
+        "executed_transport_fields": "51",
         "batch_size": "16",
         "mixing_index": "1",
         "mixing_scale": "0.5",
         "dt": "50",
         "method": "imex",
+        "linear_phase_mode": "combined",
         "forced_fe_substeps": "0",
         "validation_ok": "true",
         "eligible": "true",
@@ -41,14 +50,105 @@ def _valid_row(**updates: object) -> dict:
         "material_negative_count": "0",
         "repetitions": "3",
         "raw_samples_seconds_per_column": "1;3;2",
+        "instrumented_samples_seconds_per_column": "2;3;1",
+        "instrumented_median_seconds_per_column": "2",
+        "setup_seconds_per_column": "0.1",
+        "factorization_seconds_per_column": "",
+        "solve_seconds_per_column": "",
+        "combined_factorization_solve_seconds_per_column": "0.6",
+        "update_seconds_per_column": "0.2",
+        "diagnostics_seconds_per_column": "0.3",
+        "fence_seconds_per_column": "0.05",
     }
     row.update(updates)
+    if "linear_phase_mode" not in updates:
+        if row["method"] == "forward_euler":
+            row["linear_phase_mode"] = "none"
+        elif row["method"] == "backward_euler":
+            row["linear_phase_mode"] = "separate"
+        else:
+            row["linear_phase_mode"] = "combined"
+    linear_updates = {
+        "factorization_seconds_per_column",
+        "solve_seconds_per_column",
+        "combined_factorization_solve_seconds_per_column",
+    }
+    if not linear_updates.intersection(updates):
+        if row["method"] == "forward_euler":
+            row["factorization_seconds_per_column"] = ""
+            row["solve_seconds_per_column"] = ""
+            row["combined_factorization_solve_seconds_per_column"] = ""
+        elif row["method"] == "backward_euler":
+            row["factorization_seconds_per_column"] = "0.25"
+            row["solve_seconds_per_column"] = "0.35"
+            row["combined_factorization_solve_seconds_per_column"] = ""
+    if row["repetitions"] == "0":
+        for name in (
+            "instrumented_samples_seconds_per_column",
+            "instrumented_median_seconds_per_column",
+            "setup_seconds_per_column",
+            "factorization_seconds_per_column",
+            "solve_seconds_per_column",
+            "combined_factorization_solve_seconds_per_column",
+            "update_seconds_per_column",
+            "diagnostics_seconds_per_column",
+            "fence_seconds_per_column",
+        ):
+            if name not in updates:
+                row[name] = ""
     return row
+
+
+def _phase_rows(summary_row: dict) -> list[dict]:
+    repetitions = int(summary_row["repetitions"])
+    if repetitions == 0:
+        return []
+    instrumented = str(
+        summary_row["instrumented_samples_seconds_per_column"]
+    ).split(";")
+    setup = ("0.1", "0.2", "0")
+    factorization = ("", "", "")
+    solve = ("", "", "")
+    combined = ("0.6", "0.7", "0.5")
+    if summary_row["method"] == "forward_euler":
+        combined = ("", "", "")
+    elif summary_row["method"] == "backward_euler":
+        factorization = ("0.25", "0.3", "0.2")
+        solve = ("0.35", "0.4", "0.3")
+        combined = ("", "", "")
+    return [
+        {
+            "artifact_schema": "ndrop_phase_samples_v1",
+            "run_id": summary_row["run_id"],
+            "case_id": summary_row["case_id"],
+            "method": summary_row["method"],
+            "linear_phase_mode": summary_row["linear_phase_mode"],
+            "instrumented_repetition": str(repetition),
+            "instrumented_seconds_per_column": instrumented[repetition],
+            "setup_seconds_per_column": setup[repetition],
+            "factorization_seconds_per_column": factorization[repetition],
+            "solve_seconds_per_column": solve[repetition],
+            "combined_factorization_solve_seconds_per_column": combined[
+                repetition
+            ],
+            "update_seconds_per_column": ("0.2", "0.3", "0.1")[
+                repetition
+            ],
+            "diagnostics_seconds_per_column": ("0.3", "0.4", "0.2")[
+                repetition
+            ],
+            "fence_seconds_per_column": ("0.05", "0.06", "0.04")[
+                repetition
+            ],
+        }
+        for repetition in range(repetitions)
+    ]
 
 
 def _constant_timing_row(case_id: int, error: float, seconds: float) -> dict:
     return _valid_row(
         case_id=str(case_id),
+        dt=str(25 + 25 * case_id),
         screening_error=str(error),
         median_seconds_per_column=str(seconds),
         ci95_lower=str(seconds),
@@ -116,6 +216,92 @@ class TimingSummaryTests(unittest.TestCase):
 
 
 class RowIngestionTests(unittest.TestCase):
+    def test_v2_schema_width_and_phase_nullability_fail_closed(self) -> None:
+        bad_rows = (
+            _valid_row(artifact_schema="ndrop_summary_v1"),
+            _valid_row(run_id="bad/run"),
+            _valid_row(nonzero_state_fields="8"),
+            _valid_row(executed_aerosol_pairs="24"),
+            _valid_row(executed_transport_fields="50"),
+            _valid_row(factorization_seconds_per_column="0"),
+        )
+        for row in bad_rows:
+            with self.subTest(row=row):
+                with self.assertRaises(ScreeningInputError):
+                    ingest_rows([row])
+
+    def test_old_width_columns_cannot_substitute_for_v2_occupancy(self) -> None:
+        row = _valid_row(active_pairs="4", transported_fields="9")
+        del row["nonzero_aerosol_pairs"]
+        del row["nonzero_state_fields"]
+
+        with self.assertRaises(ScreeningInputError):
+            ingest_rows([row])
+
+    def test_paired_phase_diagnostics_preserve_raw_observations(self) -> None:
+        row = _valid_row()
+        artifacts = ingest_paired_artifacts([row], _phase_rows(row))
+
+        self.assertEqual(len(artifacts.phase_diagnostics), 1)
+        diagnostics = artifacts.phase_diagnostics[0]
+        self.assertIsInstance(diagnostics, PhaseDiagnostics)
+        self.assertNotIsInstance(diagnostics, TimingEstimate)
+        self.assertEqual(diagnostics.instrumented_seconds_per_column, (2, 3, 1))
+        self.assertEqual(
+            diagnostics.combined_factorization_solve_seconds_per_column,
+            (0.6, 0.7, 0.5),
+        )
+        self.assertIsNone(diagnostics.factorization_seconds_per_column)
+        self.assertIsNone(diagnostics.solve_seconds_per_column)
+
+    def test_sidecar_coverage_correspondence_and_medians_fail_closed(self) -> None:
+        row = _valid_row()
+        phases = _phase_rows(row)
+        malformed_pairs = (
+            phases[:-1],
+            phases + [dict(phases[0])],
+            [dict(item) for item in phases],
+            [dict(item) for item in phases],
+        )
+        malformed_pairs[2][1]["instrumented_seconds_per_column"] = "9"
+        malformed_pairs[3][1]["combined_factorization_solve_seconds_per_column"] = (
+            "0.1"
+        )
+        for phase_rows in malformed_pairs:
+            with self.subTest(phase_rows=phase_rows):
+                with self.assertRaises(ScreeningInputError):
+                    ingest_paired_artifacts([row], phase_rows)
+
+    def test_invalid_rows_have_no_samples_and_timed_exclusions_keep_them(self) -> None:
+        invalid = _valid_row(
+            case_id="8",
+            validation_ok="false",
+            eligible="false",
+            richardson_ok="false",
+            screening_error="",
+            median_seconds_per_column="",
+            ci95_lower="",
+            ci95_upper="",
+            repetitions="0",
+            raw_samples_seconds_per_column="",
+            instrumented_samples_seconds_per_column="",
+            instrumented_median_seconds_per_column="",
+            setup_seconds_per_column="",
+            combined_factorization_solve_seconds_per_column="",
+            update_seconds_per_column="",
+            diagnostics_seconds_per_column="",
+            fence_seconds_per_column="",
+        )
+        artifacts = ingest_paired_artifacts([invalid], [])
+        self.assertEqual(artifacts.phase_diagnostics, ())
+        with self.assertRaises(ScreeningInputError):
+            ingest_paired_artifacts([invalid], _phase_rows(_valid_row(case_id="8")))
+
+        excluded = _valid_row(case_id="9", eligible="false")
+        artifacts = ingest_paired_artifacts([excluded], _phase_rows(excluded))
+        self.assertEqual(len(artifacts.phase_diagnostics), 1)
+        self.assertEqual(len(artifacts.dataset.exclusions), 1)
+
     def test_validation_failure_is_excluded_not_treated_as_malformed(self) -> None:
         # Catches attempting to analyze a failed row or requiring absent timings.
         row = _valid_row(
@@ -141,11 +327,16 @@ class RowIngestionTests(unittest.TestCase):
     def test_each_analysis_gate_has_a_specific_exclusion(self) -> None:
         # Catches admitting unsafe points or hiding their specific gate failure.
         rows = [
-            _valid_row(case_id="1", eligible="false", clipping_count="1"),
-            _valid_row(case_id="2", material_negative_count="1"),
-            _valid_row(case_id="3", eligible="false"),
             _valid_row(
-                case_id="4", richardson_ok="false", screening_error=""
+                case_id="1", dt="33.33", eligible="false", clipping_count="1"
+            ),
+            _valid_row(case_id="2", dt="50", material_negative_count="1"),
+            _valid_row(case_id="3", dt="75", eligible="false"),
+            _valid_row(
+                case_id="4",
+                dt="100",
+                richardson_ok="false",
+                screening_error="",
             ),
         ]
 
@@ -240,6 +431,7 @@ class GroupingTests(unittest.TestCase):
 
         self.assertEqual(forward, backward)
         self.assertEqual(tuple(group.nlev for group, _ in forward), (1, 3))
+        self.assertEqual(forward[0][0].nonzero_state_fields, 9)
         self.assertEqual(
             tuple(point.case_id for point in forward[1][1]), (6, 7, 9)
         )

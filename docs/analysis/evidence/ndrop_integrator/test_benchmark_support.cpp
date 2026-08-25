@@ -8,8 +8,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <iostream>
+#include <map>
+#include <set>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <vector>
 
 namespace {
@@ -81,7 +84,8 @@ OperatorData make_operator() {
 
 bool finite_nonnegative(const AdvancePhaseTimings &timings) {
   const Real values[] = {timings.setup, timings.factorization, timings.solve,
-                         timings.update, timings.diagnostics};
+                         timings.combined_factorization_solve, timings.update,
+                         timings.diagnostics};
   for (const Real value : values) {
     if (!std::isfinite(value) || value < 0) {
       return false;
@@ -91,7 +95,9 @@ bool finite_nonnegative(const AdvancePhaseTimings &timings) {
 }
 
 template <typename Advance>
-void test_method(const std::string &name, Advance advance) {
+void test_method(const std::string &name,
+                 const ndrop_test::benchmark::Method method,
+                 Advance advance) {
   const State initial = make_state();
   const OperatorData op = make_operator();
   const AdvanceResult detailed = advance(initial, op, 0.5, AdvanceControl{});
@@ -111,9 +117,29 @@ void test_method(const std::string &name, Advance advance) {
         name + " phase instrumentation is state-neutral");
   check(finite_nonnegative(timings), name + " phase timings are finite");
   check(timings.setup + timings.factorization + timings.solve +
-                timings.update + timings.diagnostics >
+                timings.combined_factorization_solve + timings.update +
+                timings.diagnostics >
             0,
         name + " phase instrumentation records elapsed time");
+  check(std::string(ndrop_test::benchmark::linear_phase_mode(method)) ==
+            (method == ndrop_test::benchmark::Method::forward_euler
+                 ? "none"
+                 : method == ndrop_test::benchmark::Method::imex ? "combined"
+                                                                  : "separate"),
+        name + " has the exact linear phase mode");
+  if (method == ndrop_test::benchmark::Method::forward_euler) {
+    check(timings.factorization == 0 && timings.solve == 0 &&
+              timings.combined_factorization_solve == 0,
+          name + " has no linear solver timing");
+  } else if (method == ndrop_test::benchmark::Method::imex) {
+    check(timings.factorization == 0 && timings.solve == 0 &&
+              timings.combined_factorization_solve > 0,
+          name + " records only combined factorization-plus-solve timing");
+  } else {
+    check(timings.factorization > 0 && timings.solve > 0 &&
+              timings.combined_factorization_solve == 0,
+          name + " retains separate factorization and solve timing");
+  }
 }
 
 void test_required_matrix() {
@@ -123,12 +149,44 @@ void test_required_matrix() {
   std::size_t imex = 0;
   std::size_t be = 0;
   bool ids_are_contiguous = true;
+  bool composite_keys_are_unique = true;
+  bool occupancies_are_approved = true;
+  std::set<std::tuple<std::size_t, int, int, int, Real, Real, int, int>>
+      composite_keys;
+  std::map<std::size_t, std::size_t> level_counts;
+  std::map<int, std::size_t> occupancy_counts;
+  std::map<int, std::size_t> batch_counts;
+  std::map<int, std::size_t> mixing_counts;
+  std::map<Real, std::size_t> interval_counts;
+  std::map<int, std::size_t> fe_substep_counts;
   for (std::size_t index = 0; index < cases.size(); ++index) {
+    const auto &item = cases[index];
     ids_are_contiguous =
-        ids_are_contiguous && cases[index].id == static_cast<int>(index);
-    switch (cases[index].method) {
+        ids_are_contiguous && item.id == static_cast<int>(index);
+    composite_keys_are_unique =
+        composite_keys
+            .insert(std::make_tuple(
+                item.nlev, item.nonzero_aerosol_pairs, item.batch_size,
+                item.mixing_index, item.mixing_scale, item.dt,
+                static_cast<int>(item.method), item.forced_fe_substeps))
+            .second &&
+        composite_keys_are_unique;
+    ++level_counts[item.nlev];
+    ++occupancy_counts[item.nonzero_aerosol_pairs];
+    occupancies_are_approved =
+        occupancies_are_approved &&
+        (item.nonzero_aerosol_pairs == 1 ||
+         item.nonzero_aerosol_pairs == 4 ||
+         item.nonzero_aerosol_pairs == 8 ||
+         item.nonzero_aerosol_pairs == 16 ||
+         item.nonzero_aerosol_pairs == 25);
+    ++batch_counts[item.batch_size];
+    ++mixing_counts[item.mixing_index];
+    ++interval_counts[item.dt];
+    switch (item.method) {
     case ndrop_test::benchmark::Method::forward_euler:
       ++fe;
+      ++fe_substep_counts[item.forced_fe_substeps];
       break;
     case ndrop_test::benchmark::Method::imex:
       ++imex;
@@ -139,15 +197,18 @@ void test_required_matrix() {
     }
   }
   check(ids_are_contiguous, "required benchmark case ids are contiguous");
+  check(composite_keys_are_unique && composite_keys.size() == cases.size(),
+        "required benchmark composite keys are unique");
   check(fe == 18900 && imex == 2700 && be == 2700,
         "required benchmark method coverage is exact");
   const auto &first = cases.front();
   const auto &last = cases.back();
-  check(first.nlev == 1 && first.active_pairs == 1 && first.batch_size == 1 &&
+  check(first.nlev == 1 && first.nonzero_aerosol_pairs == 1 &&
+            first.batch_size == 1 &&
             first.mixing_index == 0 && first.mixing_scale == 0.05 &&
             first.dt == 33.33 && first.forced_fe_substeps == 1,
         "required benchmark starts at the exact lower matrix corner");
-  check(last.nlev == 128 && last.active_pairs == 25 &&
+  check(last.nlev == 128 && last.nonzero_aerosol_pairs == 25 &&
             last.batch_size == 1024 && last.mixing_index == 1 &&
             last.mixing_scale == 0.5 && last.dt == 300 &&
             last.method == ndrop_test::benchmark::Method::backward_euler,
@@ -161,7 +222,7 @@ void test_required_matrix() {
       const auto &item = cases[group + offset];
       group_layout_is_exact =
           group_layout_is_exact && item.nlev == prototype.nlev &&
-          item.active_pairs == prototype.active_pairs &&
+          item.nonzero_aerosol_pairs == prototype.nonzero_aerosol_pairs &&
           item.batch_size == prototype.batch_size &&
           item.mixing_index == prototype.mixing_index &&
           item.mixing_scale == prototype.mixing_scale &&
@@ -183,6 +244,34 @@ void test_required_matrix() {
   }
   check(group_layout_is_exact,
         "every benchmark group has the exact interleaved method layout");
+
+  const std::map<std::size_t, std::size_t> expected_level_counts = {
+      {1, 2700},   {2, 2700},   {3, 2700},   {16, 2700}, {32, 2700},
+      {64, 2700},  {72, 2700},  {127, 2700}, {128, 2700}};
+  const std::map<int, std::size_t> expected_occupancy_counts = {
+      {1, 4860}, {4, 4860}, {8, 4860}, {16, 4860}, {25, 4860}};
+  const std::map<int, std::size_t> expected_batch_counts = {
+      {1, 4860}, {16, 4860}, {64, 4860}, {256, 4860}, {1024, 4860}};
+  const std::map<int, std::size_t> expected_mixing_counts = {
+      {0, 12150}, {1, 12150}};
+  const std::map<Real, std::size_t> expected_interval_counts = {
+      {33.33, 4050}, {50, 4050},  {75, 4050},
+      {100, 4050},   {150, 4050}, {300, 4050}};
+  const std::map<int, std::size_t> expected_fe_substep_counts = {
+      {1, 2700}, {2, 2700}, {3, 2700}, {5, 2700},
+      {8, 2700}, {16, 2700}, {21, 2700}};
+  check(level_counts == expected_level_counts &&
+            occupancy_counts == expected_occupancy_counts &&
+            batch_counts == expected_batch_counts &&
+            mixing_counts == expected_mixing_counts &&
+            interval_counts == expected_interval_counts &&
+            fe_substep_counts == expected_fe_substep_counts,
+        "required benchmark has exact marginal matrix coverage");
+  check(ndrop_test::benchmark::executed_aerosol_pairs == 25 &&
+            ndrop_test::benchmark::executed_transport_fields == 51,
+        "benchmark executed width is fixed at 25 pairs and 51 fields");
+  check(occupancies_are_approved,
+        "benchmark occupancy uses only the approved values");
 
   const auto smoke = ndrop_test::benchmark::required_cases(true);
   check(smoke.size() == 3, "smoke benchmark has one row per method");
@@ -287,7 +376,7 @@ void test_statistics_and_accounting() {
 int main(int argc, char **argv) {
   Kokkos::initialize(argc, argv);
   test_method(
-      "Forward Euler",
+      "Forward Euler", ndrop_test::benchmark::Method::forward_euler,
       [](const State &state, const OperatorData &op, const Real dt,
          const AdvanceControl &control) {
         ndrop_test::ForwardEulerOptions options;
@@ -295,8 +384,11 @@ int main(int argc, char **argv) {
         return ndrop_test::advance_forward_euler(state, op, dt, options,
                                                  control);
       });
-  test_method("IMEX", ndrop_test::advance_imex);
-  test_method("Backward Euler", ndrop_test::advance_backward_euler);
+  test_method("IMEX", ndrop_test::benchmark::Method::imex,
+              ndrop_test::advance_imex);
+  test_method("Backward Euler",
+              ndrop_test::benchmark::Method::backward_euler,
+              ndrop_test::advance_backward_euler);
   test_required_matrix();
   test_statistics_and_accounting();
   Kokkos::finalize();

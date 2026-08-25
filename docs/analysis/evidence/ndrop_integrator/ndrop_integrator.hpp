@@ -116,6 +116,10 @@ struct AdvancePhaseTimings {
   Real setup = 0;
   Real factorization = 0;
   Real solve = 0;
+  // IMEX uses the supported EKAT Thomas operation, which combines
+  // coefficient-copy/factorization/solve work and cannot be separated without
+  // changing the measured algorithm.
+  Real combined_factorization_solve = 0;
   Real update = 0;
   Real diagnostics = 0;
 };

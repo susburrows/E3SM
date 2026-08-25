@@ -13,10 +13,13 @@ namespace ndrop_test::benchmark {
 
 enum class Method { forward_euler, imex, backward_euler };
 
+constexpr int executed_aerosol_pairs = num_constituents;
+constexpr int executed_transport_fields = 1 + 2 * num_constituents;
+
 struct Case {
   int id = 0;
   std::size_t nlev = 0;
-  int active_pairs = 0;
+  int nonzero_aerosol_pairs = 0;
   int batch_size = 0;
   int mixing_index = 0;
   Real mixing_scale = 0;
@@ -41,6 +44,7 @@ struct RichardsonErrors {
 };
 
 const char *method_name(Method method);
+const char *linear_phase_mode(Method method);
 std::vector<Case> required_cases(bool smoke = false);
 Real sample_median(std::vector<Real> samples);
 BootstrapInterval bootstrap_median_interval(

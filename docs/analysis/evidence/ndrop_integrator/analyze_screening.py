@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 import math
+import re
 from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -45,7 +46,7 @@ class GroupKey:
     """Deterministic workload key for matched error-cost comparisons."""
 
     nlev: int
-    transported_fields: int
+    nonzero_state_fields: int
     batch_size: int
     mixing_index: int
     mixing_scale: float
@@ -92,6 +93,38 @@ class AnalysisDataset:
     exclusions: Tuple[Exclusion, ...]
 
 
+@dataclass(frozen=True)
+class PhaseDiagnostics:
+    """Raw diagnostic-only instrumented observations for one benchmark case.
+
+    This type deliberately has no :class:`TimingEstimate` conversion and is
+    not accepted by comparative functions.
+    """
+
+    run_id: str
+    case_id: int
+    method: str
+    linear_phase_mode: str
+    instrumented_seconds_per_column: Tuple[float, ...]
+    setup_seconds_per_column: Tuple[float, ...]
+    factorization_seconds_per_column: Optional[Tuple[float, ...]]
+    solve_seconds_per_column: Optional[Tuple[float, ...]]
+    combined_factorization_solve_seconds_per_column: Optional[
+        Tuple[float, ...]
+    ]
+    update_seconds_per_column: Tuple[float, ...]
+    diagnostics_seconds_per_column: Tuple[float, ...]
+    fence_seconds_per_column: Tuple[float, ...]
+
+
+@dataclass(frozen=True)
+class PairedArtifacts:
+    """Validated summary analysis plus separate diagnostic phase evidence."""
+
+    dataset: AnalysisDataset
+    phase_diagnostics: Tuple[PhaseDiagnostics, ...]
+
+
 class SelectionStatus(str, Enum):
     """Availability of a measured runtime-versus-error target."""
 
@@ -135,14 +168,20 @@ class BreakEvenEstimate:
 
 _REQUIRED_ROW_FIELDS = frozenset(
     {
+        "artifact_schema",
+        "run_id",
         "case_id",
         "nlev",
-        "transported_fields",
+        "nonzero_aerosol_pairs",
+        "nonzero_state_fields",
+        "executed_aerosol_pairs",
+        "executed_transport_fields",
         "batch_size",
         "mixing_index",
         "mixing_scale",
         "dt",
         "method",
+        "linear_phase_mode",
         "forced_fe_substeps",
         "validation_ok",
         "eligible",
@@ -155,8 +194,43 @@ _REQUIRED_ROW_FIELDS = frozenset(
         "material_negative_count",
         "repetitions",
         "raw_samples_seconds_per_column",
+        "instrumented_samples_seconds_per_column",
+        "instrumented_median_seconds_per_column",
+        "setup_seconds_per_column",
+        "factorization_seconds_per_column",
+        "solve_seconds_per_column",
+        "combined_factorization_solve_seconds_per_column",
+        "update_seconds_per_column",
+        "diagnostics_seconds_per_column",
+        "fence_seconds_per_column",
     }
 )
+
+_REQUIRED_PHASE_FIELDS = frozenset(
+    {
+        "artifact_schema",
+        "run_id",
+        "case_id",
+        "method",
+        "linear_phase_mode",
+        "instrumented_repetition",
+        "instrumented_seconds_per_column",
+        "setup_seconds_per_column",
+        "factorization_seconds_per_column",
+        "solve_seconds_per_column",
+        "combined_factorization_solve_seconds_per_column",
+        "update_seconds_per_column",
+        "diagnostics_seconds_per_column",
+        "fence_seconds_per_column",
+    }
+)
+
+_RUN_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
+_LINEAR_PHASE_MODE = {
+    "forward_euler": "none",
+    "imex": "combined",
+    "backward_euler": "separate",
+}
 
 
 def _finite_nonnegative(value: object, name: str) -> float:
@@ -197,11 +271,85 @@ def _boolean(value: object, name: str) -> bool:
     raise ScreeningInputError("{} must be true or false".format(name))
 
 
+def _blank(value: object) -> bool:
+    return value is None or value == ""
+
+
+def _required_or_blank_timing(
+    value: object, name: str, required: bool
+) -> Optional[float]:
+    if required:
+        if _blank(value):
+            raise ScreeningInputError("{} must be numeric".format(name))
+        return _finite_nonnegative(value, name)
+    if not _blank(value):
+        raise ScreeningInputError("{} must be blank".format(name))
+    return None
+
+
+def _validated_run_id(value: object) -> str:
+    if not isinstance(value, str) or _RUN_ID.fullmatch(value) is None:
+        raise ScreeningInputError(
+            "run_id must match [A-Za-z0-9._-]{1,128}"
+        )
+    return value
+
+
+def _validate_linear_contract(
+    row: Mapping, method: str, has_samples: bool
+) -> None:
+    expected_mode = _LINEAR_PHASE_MODE[method]
+    if row["linear_phase_mode"] != expected_mode:
+        raise ScreeningInputError(
+            "linear_phase_mode does not match the benchmark method"
+        )
+    _required_or_blank_timing(
+        row["factorization_seconds_per_column"],
+        "factorization_seconds_per_column",
+        has_samples and method == "backward_euler",
+    )
+    _required_or_blank_timing(
+        row["solve_seconds_per_column"],
+        "solve_seconds_per_column",
+        has_samples and method == "backward_euler",
+    )
+    _required_or_blank_timing(
+        row["combined_factorization_solve_seconds_per_column"],
+        "combined_factorization_solve_seconds_per_column",
+        has_samples and method == "imex",
+    )
+    for name in (
+        "setup_seconds_per_column",
+        "update_seconds_per_column",
+        "diagnostics_seconds_per_column",
+        "fence_seconds_per_column",
+    ):
+        _required_or_blank_timing(row[name], name, has_samples)
+
+
 def _row_identity(row: Mapping) -> Tuple[int, GroupKey, str]:
     case_id = _integer(row["case_id"], "case_id")
+    nonzero_pairs = _integer(
+        row["nonzero_aerosol_pairs"], "nonzero_aerosol_pairs", 1
+    )
+    if nonzero_pairs not in {1, 4, 8, 16, 25}:
+        raise ScreeningInputError(
+            "nonzero_aerosol_pairs is outside the approved occupancy set"
+        )
+    nonzero_fields = _integer(
+        row["nonzero_state_fields"], "nonzero_state_fields", 1
+    )
+    if nonzero_fields != 1 + 2 * nonzero_pairs:
+        raise ScreeningInputError(
+            "nonzero_state_fields must equal 1 + 2*nonzero_aerosol_pairs"
+        )
+    if _integer(row["executed_aerosol_pairs"], "executed_aerosol_pairs") != 25:
+        raise ScreeningInputError("executed_aerosol_pairs must equal 25")
+    if _integer(row["executed_transport_fields"], "executed_transport_fields") != 51:
+        raise ScreeningInputError("executed_transport_fields must equal 51")
     group = GroupKey(
         _integer(row["nlev"], "nlev", 1),
-        _integer(row["transported_fields"], "transported_fields", 1),
+        nonzero_fields,
         _integer(row["batch_size"], "batch_size", 1),
         _integer(row["mixing_index"], "mixing_index"),
         _finite_nonnegative(row["mixing_scale"], "mixing_scale"),
@@ -247,6 +395,9 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
 
     points = []
     exclusions = []
+    seen_case_ids = set()
+    seen_composite_keys = set()
+    run_id = None
     for index, row in enumerate(row_iterator):
         if not isinstance(row, Mapping):
             raise ScreeningInputError("row {} must be a mapping".format(index))
@@ -257,7 +408,28 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
                     index, ", ".join(missing)
                 )
             )
+        if row["artifact_schema"] != "ndrop_summary_v2":
+            raise ScreeningInputError(
+                "artifact_schema must equal ndrop_summary_v2"
+            )
+        row_run_id = _validated_run_id(row["run_id"])
+        if run_id is None:
+            run_id = row_run_id
+        elif row_run_id != run_id:
+            raise ScreeningInputError("summary rows contain mixed run IDs")
         case_id, group, method = _row_identity(row)
+        if case_id in seen_case_ids:
+            raise ScreeningInputError("summary case_id values must be unique")
+        seen_case_ids.add(case_id)
+        composite_key = (
+            group,
+            _finite_nonnegative(row["dt"], "dt"),
+            method,
+            _integer(row["forced_fe_substeps"], "forced_fe_substeps"),
+        )
+        if composite_key in seen_composite_keys:
+            raise ScreeningInputError("summary composite keys must be unique")
+        seen_composite_keys.add(composite_key)
         validation_ok = _boolean(row["validation_ok"], "validation_ok")
         eligible = _boolean(row["eligible"], "eligible")
         richardson_ok = _boolean(row["richardson_ok"], "richardson_ok")
@@ -266,11 +438,75 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             row["material_negative_count"], "material_negative_count"
         )
         raw_samples = _raw_timing_samples(row["raw_samples_seconds_per_column"])
+        instrumented_samples = _raw_timing_samples(
+            row["instrumented_samples_seconds_per_column"]
+        )
         repetitions = _integer(row["repetitions"], "repetitions")
-        if repetitions != len(raw_samples):
+        if repetitions != len(raw_samples) or repetitions != len(
+            instrumented_samples
+        ):
             raise ScreeningInputError(
-                "repetitions must equal the raw timing sample count"
+                "repetitions must equal both raw timing sample counts"
             )
+        if validation_ok != (repetitions > 0):
+            raise ScreeningInputError(
+                "valid rows require samples and invalid rows require zero repetitions"
+            )
+        _validate_linear_contract(row, method, repetitions > 0)
+        dt_seconds = _finite_nonnegative(row["dt"], "dt")
+        if dt_seconds == 0.0:
+            raise ScreeningInputError("dt must be positive seconds")
+        forced_fe_substeps = _integer(
+            row["forced_fe_substeps"], "forced_fe_substeps"
+        )
+        if method == "forward_euler":
+            if forced_fe_substeps < 1:
+                raise ScreeningInputError(
+                    "forward_euler requires positive forced_fe_substeps"
+                )
+            fe_nsubmix = forced_fe_substeps
+        else:
+            if forced_fe_substeps != 0:
+                raise ScreeningInputError(
+                    "non-forward_euler rows require zero forced_fe_substeps"
+                )
+            fe_nsubmix = None
+        timing = None
+        if repetitions > 0:
+            timing = summarize_timing(
+                raw_samples,
+                (
+                    row["ci95_lower"],
+                    row["ci95_upper"],
+                ),
+            )
+            reported_median = _finite_nonnegative(
+                row["median_seconds_per_column"],
+                "median_seconds_per_column",
+            )
+            if reported_median != timing.median_seconds_per_column:
+                raise ScreeningInputError(
+                    "reported timing median must equal the exact raw sample median"
+                )
+            instrumented_median = float(median(instrumented_samples))
+            if _finite_nonnegative(
+                row["instrumented_median_seconds_per_column"],
+                "instrumented_median_seconds_per_column",
+            ) != instrumented_median:
+                raise ScreeningInputError(
+                    "reported instrumented median must equal its raw sample median"
+                )
+        else:
+            for name in (
+                "median_seconds_per_column",
+                "ci95_lower",
+                "ci95_upper",
+                "instrumented_median_seconds_per_column",
+            ):
+                if not _blank(row[name]):
+                    raise ScreeningInputError(
+                        "{} must be blank for invalid rows".format(name)
+                    )
         if not validation_ok:
             exclusions.append(
                 Exclusion(
@@ -310,40 +546,11 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
                 )
             )
             continue
-        screening_error = _finite_nonnegative(screening_error_value, "screening_error")
-        dt_seconds = _finite_nonnegative(row["dt"], "dt")
-        if dt_seconds == 0.0:
-            raise ScreeningInputError("dt must be positive seconds")
-        forced_fe_substeps = _integer(
-            row["forced_fe_substeps"], "forced_fe_substeps"
+        screening_error = _finite_nonnegative(
+            screening_error_value, "screening_error"
         )
-        if method == "forward_euler":
-            if forced_fe_substeps < 1:
-                raise ScreeningInputError(
-                    "forward_euler requires positive forced_fe_substeps"
-                )
-            fe_nsubmix = forced_fe_substeps
-        else:
-            if forced_fe_substeps != 0:
-                raise ScreeningInputError(
-                    "non-forward_euler rows require zero forced_fe_substeps"
-                )
-            fe_nsubmix = None
-        timing = summarize_timing(
-            raw_samples,
-            (
-                row["ci95_lower"],
-                row["ci95_upper"],
-            ),
-        )
-        reported_median = _finite_nonnegative(
-            row["median_seconds_per_column"],
-            "median_seconds_per_column",
-        )
-        if reported_median != timing.median_seconds_per_column:
-            raise ScreeningInputError(
-                "reported timing median must equal the exact raw sample median"
-            )
+        if timing is None:
+            raise ScreeningInputError("eligible rows require primary timing")
         points.append(
             ScreeningPoint(
                 case_id,
@@ -356,6 +563,151 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             )
         )
     return AnalysisDataset(tuple(points), tuple(exclusions))
+
+
+def ingest_paired_artifacts(
+    summary_rows: Iterable[Mapping], phase_rows: Iterable[Mapping]
+) -> PairedArtifacts:
+    """Validate a paired summary/phase artifact without mixing evidence types.
+
+    The summary must use ``ndrop_summary_v2`` and every instrumented
+    observation must be present exactly once in ``ndrop_phase_samples_v1``.
+    Phase diagnostics remain raw tuples and cannot become primary timing
+    estimates through this interface.
+    """
+
+    if isinstance(summary_rows, (str, bytes, Mapping)):
+        raise ScreeningInputError("summary_rows must be an iterable of mappings")
+    if isinstance(phase_rows, (str, bytes, Mapping)):
+        raise ScreeningInputError("phase_rows must be an iterable of mappings")
+    try:
+        summaries = tuple(summary_rows)
+        phases = tuple(phase_rows)
+    except TypeError:
+        raise ScreeningInputError("paired artifacts must be iterable")
+    if not summaries:
+        raise ScreeningInputError("paired artifacts require summary rows")
+    dataset = ingest_rows(summaries)
+    summary_by_case = {
+        _integer(row["case_id"], "case_id"): row for row in summaries
+    }
+    observed: Dict[int, Dict[int, Mapping]] = {}
+    for index, row in enumerate(phases):
+        if not isinstance(row, Mapping):
+            raise ScreeningInputError(
+                "phase row {} must be a mapping".format(index)
+            )
+        missing = sorted(_REQUIRED_PHASE_FIELDS.difference(row))
+        if missing:
+            raise ScreeningInputError(
+                "phase row {} is missing required fields: {}".format(
+                    index, ", ".join(missing)
+                )
+            )
+        if row["artifact_schema"] != "ndrop_phase_samples_v1":
+            raise ScreeningInputError(
+                "phase artifact_schema must equal ndrop_phase_samples_v1"
+            )
+        phase_run_id = _validated_run_id(row["run_id"])
+        case_id = _integer(row["case_id"], "case_id")
+        if case_id not in summary_by_case:
+            raise ScreeningInputError("phase row has no matching summary row")
+        summary = summary_by_case[case_id]
+        if phase_run_id != summary["run_id"]:
+            raise ScreeningInputError("summary and phase run IDs differ")
+        method = row["method"]
+        if method != summary["method"]:
+            raise ScreeningInputError("summary and phase methods differ")
+        if row["linear_phase_mode"] != summary["linear_phase_mode"]:
+            raise ScreeningInputError("summary and phase modes differ")
+        repetition = _integer(
+            row["instrumented_repetition"], "instrumented_repetition"
+        )
+        case_observed = observed.setdefault(case_id, {})
+        if repetition in case_observed:
+            raise ScreeningInputError(
+                "phase repetition keys must be unique per case"
+            )
+        for name in (
+            "instrumented_seconds_per_column",
+            "setup_seconds_per_column",
+            "update_seconds_per_column",
+            "diagnostics_seconds_per_column",
+            "fence_seconds_per_column",
+        ):
+            _finite_nonnegative(row[name], name)
+        _validate_linear_contract(row, method, True)
+        case_observed[repetition] = row
+
+    diagnostics = []
+    median_fields = (
+        "setup_seconds_per_column",
+        "factorization_seconds_per_column",
+        "solve_seconds_per_column",
+        "combined_factorization_solve_seconds_per_column",
+        "update_seconds_per_column",
+        "diagnostics_seconds_per_column",
+        "fence_seconds_per_column",
+    )
+    for case_id in sorted(summary_by_case):
+        summary = summary_by_case[case_id]
+        repetitions = _integer(summary["repetitions"], "repetitions")
+        case_observed = observed.get(case_id, {})
+        if set(case_observed) != set(range(repetitions)):
+            raise ScreeningInputError(
+                "phase repetitions must be contiguous and cover the summary"
+            )
+        if repetitions == 0:
+            continue
+        ordered = tuple(case_observed[index] for index in range(repetitions))
+        instrumented = tuple(
+            _finite_nonnegative(
+                row["instrumented_seconds_per_column"],
+                "instrumented_seconds_per_column",
+            )
+            for row in ordered
+        )
+        if instrumented != _raw_timing_samples(
+            summary["instrumented_samples_seconds_per_column"]
+        ):
+            raise ScreeningInputError(
+                "sidecar instrumented totals must match summary samples elementwise"
+            )
+        sample_columns: Dict[str, Tuple[float, ...]] = {}
+        for name in median_fields:
+            if _blank(summary[name]):
+                if any(not _blank(row[name]) for row in ordered):
+                    raise ScreeningInputError(
+                        "sidecar linear nullability differs from the summary"
+                    )
+                continue
+            values = tuple(
+                _finite_nonnegative(row[name], name) for row in ordered
+            )
+            if _finite_nonnegative(summary[name], name) != float(median(values)):
+                raise ScreeningInputError(
+                    "summary phase median cannot be reconstructed exactly"
+                )
+            sample_columns[name] = values
+        diagnostics.append(
+            PhaseDiagnostics(
+                str(summary["run_id"]),
+                case_id,
+                str(summary["method"]),
+                str(summary["linear_phase_mode"]),
+                instrumented,
+                sample_columns["setup_seconds_per_column"],
+                sample_columns.get("factorization_seconds_per_column"),
+                sample_columns.get("solve_seconds_per_column"),
+                sample_columns.get(
+                    "combined_factorization_solve_seconds_per_column"
+                ),
+                sample_columns["update_seconds_per_column"],
+                sample_columns["diagnostics_seconds_per_column"],
+                sample_columns["fence_seconds_per_column"],
+            )
+        )
+    return PairedArtifacts(dataset, tuple(diagnostics))
 
 
 def _point_order(point: ScreeningPoint) -> tuple:
@@ -374,9 +726,10 @@ def deterministic_groups(
 ) -> Tuple[Tuple[GroupKey, Tuple[ScreeningPoint, ...]], ...]:
     """Group points by workload in deterministic key and point order.
 
-    The key fixes levels, transported-field count, batch size, and both the
-    mixing-regime label and dimensionless strength.  Time step, method, and FE
-    submix count remain comparison axes.
+    The key fixes levels, nonzero-state occupancy, batch size, and both the
+    mixing-regime label and dimensionless strength. Executed width remains
+    fixed at 51 fields. Time step, method, and FE submix count remain
+    comparison axes.
     """
 
     grouped: Dict[GroupKey, List[ScreeningPoint]] = {}
