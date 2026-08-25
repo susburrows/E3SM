@@ -179,7 +179,7 @@ boundaries, determinism, and reference self-consistency. Enforce method-local
 PASS/FAIL gates and exclusion. Commit as
 `test(ndrop): add cross-scheme accuracy gate`.
 
-## Task 5: Add and run the optimized Mac performance screen
+## Task 5: Add and run the optimized Mac performance screen (pre-remediation)
 
 Add `benchmark_ndrop_integrators.cpp` and required CMake targets. Verify the
 benchmark implementation against the validated path. Time the full advance and
@@ -190,24 +190,75 @@ metadata. Emit raw machine-readable samples; do not commit large generated
 build trees. Include only schemes that passed Task 4. Commit as
 `perf(ndrop): add validated local screening benchmark`.
 
+This original Task 5 implementation is committed, but its retained-evidence
+contract is superseded by Task 5R below. No pre-remediation output is eligible
+for Task 6 or the final recommendation.
+
+### Task 5R: Remediate the retained-evidence contract
+
+**PENDING EXPLICIT APPROVAL:** update the authoritative design with the Task 5
+evidence-remediation amendment and stop for user approval before changing
+benchmark source. Commit `dba6d00598d86a239a2bf2743d95325821c9378c` and all
+results produced from it remain historical pre-remediation evidence.
+
+After approval, replace the nominal width labels with
+`nonzero_aerosol_pairs` and `nonzero_state_fields`, add constant executed-width
+fields of 25 aerosol pairs and 51 transported fields, and prohibit
+transported-width scaling conclusions. Freeze the summary as
+`ndrop_summary_v2` with a run identifier and method-explicit
+`linear_phase_mode`. Record Forward Euler as `none`, Backward Euler with
+separate factorization and solve, and IMEX with one combined coefficient-view
+allocation/copy plus supported public EKAT Thomas factorization-and-solve
+phase. Method-inapplicable linear timing values are blank, never zero.
+
+Require `--run-id` and `--phase-samples-output`. Write an
+`ndrop_phase_samples_v1` sidecar outside all timed regions with one row per
+instrumented repetition for every `validation_ok=true` row, including
+timed-but-ineligible rows. Bind summary and sidecar to a clean detached source,
+binary, locked dependencies, commands, schemas, machine, and output paths
+through an immutable identity manifest. Use paired partial outputs, validate
+and hash both, rename both, then create a per-shard completion JSON last. A
+shard without a valid completion record and both matching hashes does not
+exist for analysis.
+
+Add fail-closed schema/provenance validation and keep phase diagnostics in a
+type/path that cannot enter CPU speedup, matched-error, break-even, hybrid, or
+recommendation calculations. Use only primary uninstrumented complete-advance
+time for comparisons. Run fresh complete sanitizer/debug and optimized suites,
+peer review plus a second focused pass, and a new retained 24,300-row screen.
+Use 180-case shards aligned to nine-row groups, one serial worker, 10 warmups,
+30--100 repetitions, 10,000 bootstrap resamples, at least 5 GB free in both
+scratch and results, and new immutable scratch/results locations. Do not begin
+Task 6 until the merged summary, phase sidecar, completion records, and final
+manifest pass the amended gate.
+
 ## Task 6: Analyze error-cost and break-even behavior
 
-Add `analyze_screening.py` with tests using synthetic fixtures whose medians,
+Extend the committed `analyze_screening.py` synthetic-statistics foundation
+with tests using fixtures whose medians,
 confidence intervals, exclusions, adjacent interpolation, and break-even
 answers are hand-derived. Analyze the executed accuracy and timing outputs for
-the required tolerances, FE `nsubmix`, levels, transported fields, batch sizes,
-mixing strengths, and ACI intervals. Quantify uncertainty. Evaluate an FE/IMEX
-threshold hybrid, including packing and workload-variation sensitivity. Keep
-executed CPU measurements separate from GPU-structure estimates.
+the required tolerances, FE `nsubmix`, levels, nonzero-state occupancies, batch
+sizes, mixing strengths, and ACI intervals. The executed width remains 25
+aerosol pairs/51 transported fields; do not infer width scaling. Reject old,
+unversioned, incomplete, mixed-run, or stale-hash artifacts and require exact
+summary/sidecar sample correspondence. Quantify uncertainty. Evaluate an
+FE/IMEX threshold hybrid, including packing and workload-variation sensitivity.
+Keep executed CPU measurements separate from phase diagnostics and GPU-
+structure estimates; comparative functions may consume only primary
+uninstrumented timings.
 
 ## Task 7: Write the screening report and recommendation
 
-Create `docs/analysis/eamxx_ndrop_integrator_screening.md`. Include separate
+Complete the committed draft
+`docs/analysis/eamxx_ndrop_integrator_screening.md`. Include separate
 FE/IMEX/BE PASS/FAIL gates; accuracy/convergence tables; positivity, clipping,
 and conservation tables; typical/strong performance tables; runtime-versus-
-error results; break-even `nsubmix` by level/field count; batching and qualitative
-GPU implications; exact provenance; uncertainty, limitations, failed/excluded
-cases; and the production distributions/counters needed to revise estimates.
+error results; break-even `nsubmix` by level and nonzero-state occupancy;
+batching and qualitative GPU implications; exact provenance; uncertainty,
+limitations, failed/excluded cases; and the production distributions/counters
+needed to revise estimates. State that occupancy is not executed width and
+make no transported-width scaling claim.
 Choose exactly one recommendation: current FE, IMEX, BE, FE/IMEX hybrid, or
 insufficient evidence. Commit analysis and report as
 `docs(ndrop): report integrator screening results`.
@@ -217,11 +268,13 @@ insufficient evidence. Commit analysis and report as
 Give a strict reviewer the design, this plan, locked provenance, complete branch
 diff, raw evidence, and exact commands. The reviewer must create or use a clean
 detached checkout, reconstruct locked dependencies, rerun the complete debug
-and optimized suites, verify hashes/results, and issue separate FE, IMEX, BE,
-and cross-scheme PASS/FAIL decisions. It must also judge whether the report
-separates measurements from estimates and whether exclusions and uncertainty
-are correct. Address all critical/important findings through the review loop.
-Do not accept the final comparison without this review.
+and optimized suites, verify the identity/final manifests, all paired shard
+completion records, summary and sidecar hashes/results, and issue separate FE,
+IMEX, BE, and cross-scheme PASS/FAIL decisions. It must also judge whether the
+report separates primary measurements from diagnostic phases and estimates,
+and whether exclusions and uncertainty are correct. Address all
+critical/important findings through the review loop. Do not accept the final
+comparison without this review.
 
 ## Required Outputs
 
@@ -230,6 +283,7 @@ Do not accept the final comparison without this review.
 3. Positivity, clipping, and conservation tables.
 4. Typical and strong-mixing performance tables.
 5. Runtime-versus-error comparisons.
-6. Break-even `nsubmix` estimates by level and transported-variable count.
+6. Break-even `nsubmix` estimates by level and nonzero-state occupancy, with
+   executed width fixed at 51 and no width-scaling conclusion.
 7. One explicit recommendation from the approved list.
 8. A concise production-measurement list for revising offline estimates.

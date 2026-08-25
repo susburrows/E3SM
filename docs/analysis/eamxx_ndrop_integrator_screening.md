@@ -17,9 +17,18 @@ A static review of the committed Task 5 source found no Critical issue, but
 identified three Important limitations that remain open: the nominal
 transported-field axis does not change executed width, IMEX exposes a combined
 factorization-plus-solve phase rather than separate phase timings, and raw
-phase/fence samples are not serialized. These findings do not invalidate the
-complete uninstrumented timing region, but they block field-count scaling and
-phase-level conclusions.
+phase/fence samples are not serialized. These findings do not change what the
+complete uninstrumented timing region contains, but no pre-remediation artifact
+is eligible for Task 6 or the final recommendation. They also block field-count
+scaling and phase-level conclusions.
+
+The pending Task 5R design amendment selects exact remedies for those
+findings: occupancy-only labels with fixed executed-width metadata, a supported
+combined IMEX factorization-plus-solve phase, and a repetition-level phase
+sidecar. It also adds paired-output completion records and fail-closed analysis
+boundaries. These are approved-plan requirements, not implemented or executed
+results. Source changes and a remediated retained run require explicit approval
+of the design amendment.
 
 ## Executive status
 
@@ -258,12 +267,55 @@ production ACI interval is sufficiently accurate.
 
 ## Optimized Mac performance methodology
 
-The committed Task 5 implementation is in
+The pre-remediation Task 5 implementation is in
 `benchmark_ndrop_integrators.cpp`, `ndrop_benchmark.cpp`,
 `ndrop_benchmark.hpp`, and the phase-timer support. Its benchmark-support tests
 encode checks for the required matrix, statistics, state neutrality, case
 ordering, accounting, and timing-path equivalence. The complete retained run,
 artifact hashes, and performance review remain pending.
+
+### Pending Task 5R evidence contract
+
+**Status: PENDING EXPLICIT APPROVAL AND IMPLEMENTATION.** No value from the
+pre-remediation run bound to
+`dba6d00598d86a239a2bf2743d95325821c9378c` may be merged into or substituted
+for the remediated evidence.
+
+The remediated summary will declare `artifact_schema=ndrop_summary_v2` and a
+validated `run_id`. The varying fields will be `nonzero_aerosol_pairs` and
+`nonzero_state_fields`, with
+`nonzero_state_fields == 1 + 2*nonzero_aerosol_pairs`. Every row will also
+declare the fixed executed width, `executed_aerosol_pairs=25` and
+`executed_transport_fields=51`. The report may analyze sensitivity to nonzero
+occupancy but may not infer transported-width scaling.
+
+The linear phase contract will be method-specific:
+
+| Method | `linear_phase_mode` | Factorization | Solve | Combined factorization-plus-solve |
+|---|---|---|---|---|
+| FE | `none` | unavailable | unavailable | unavailable |
+| IMEX | `combined` | unavailable | unavailable | measured diagnostically |
+| BE | `separate` | measured diagnostically | measured diagnostically | unavailable |
+
+Unavailable values will be blank, never numeric zero. The IMEX combined phase
+will include matrix-view allocation/coefficient copy and both supported EKAT
+serial Thomas factorization-and-solve calls. No unsupported EKAT helper or new
+solver is authorized, and BE's phase boundaries remain unchanged.
+
+Every instrumented repetition for every `validation_ok=true` summary row will
+be serialized in an `ndrop_phase_samples_v1` sidecar, including rows later
+excluded from comparative analysis. Invalid rows will have zero repetitions
+and no sidecar rows. Sidecar instrumented totals must match the summary raw
+instrumented list element by element, and all phase/fence medians must be
+reconstructible with the benchmark's exact median algorithm.
+
+The retained screen will use an immutable pre-run identity manifest and 135
+aligned 180-case shards. Each summary/sidecar pair is accepted only when both
+files validate, both hashes match, and its completion record was written last.
+The deterministic merge and final immutable manifest must bind both merged
+artifacts. Only complete primary uninstrumented timings may enter speedup,
+matched-error, break-even, hybrid, or recommendation calculations; phase data
+remain diagnostic only.
 
 ### Required benchmark matrix
 
@@ -271,8 +323,8 @@ The implementation emits 24,300 method rows:
 
 - 18,900 FE rows and 2,700 rows each for IMEX and BE;
 - active levels `1,2,3,16,32,64,72,127,128`;
-- active aerosol-pair inputs `1,4,8,16,25`, which vary nonzero-state occupancy
-  while all methods still execute 51 fields;
+- nonzero aerosol-pair inputs `1,4,8,16,25`, which vary nonzero-state occupancy
+  while all methods still execute 25 pairs and 51 fields;
 - batch sizes `1,16,64,256,1024` columns;
 - synthetic typical and strong mixing scales `0.05` and `0.5`;
 - ACI intervals `33.33,50,75,100,150,300` seconds; and
@@ -296,12 +348,13 @@ The primary timing path disables detailed diagnostics but preserves the
 validated state and required status/positivity behavior. Before timing, the
 code executes both the full diagnostic path and the lean path and requires
 bitwise-identical state, identical clipping count, and identical material-
-negative count. A separate instrumented pass records setup, factorization,
-solve, update, diagnostics, and fence phase medians and reports its overhead
-relative to the primary pass. For IMEX, the EKAT Thomas helper combines
-coefficient copying, factorization, and solve inside the recorded solve phase;
-its zero separate factorization value is not comparable with BE's
-factorization phase.
+negative count. A separate instrumented pass records setup, method-specific
+linear work, update, diagnostics, and fence phase observations and reports its
+overhead relative to the primary pass. Under Task 5R, IMEX coefficient copying,
+factorization, and solve will be recorded only in the combined
+factorization-plus-solve phase; its separate factorization and solve values are
+unavailable rather than zero. BE retains separate factorization and solve
+phases, while FE's linear-phase values are unavailable.
 
 The batch loop is a local Kokkos Serial CPU loop over homogeneous columns. It
 does not reuse a matrix or factorization across columns. Batch-size effects are
@@ -348,9 +401,10 @@ overhead; it is not a paired-sample confidence interval.
 
 Phase medians are descriptive and need not sum exactly to the median complete
 advance because medians are nonlinear and instrumentation itself has cost.
-The current CSV does not serialize raw phase or fence samples, so those
-medians cannot be independently reconstructed or used for phase-level method
-conclusions. Only the complete uninstrumented median supports a local CPU
+The pre-remediation CSV does not serialize raw phase or fence samples, so it
+cannot support phase-level conclusions. Task 5R requires raw repetition-level
+serialization and independent median reconstruction, but those values remain
+diagnostic. Only complete uninstrumented timing supports a local CPU
 comparison.
 
 ### Direct measurements versus accounting estimates
@@ -360,7 +414,7 @@ The final tables must preserve these classifications:
 | Quantity | Classification |
 |---|---|
 | Complete and instrumented time per column-call, repetitions, and bootstrap interval | **Measured**, after the retained run completes |
-| Phase and fence medians | **Recorded instrumented summaries**; raw samples are not serialized, and IMEX factorization is combined with solve |
+| Phase and fence samples/medians | **Diagnostic measured observations** only after the Task 5R sidecar validates; never comparative timing |
 | State status, clipping count, material-negative count, factorization and solve counters, and checksums | **Executed diagnostic/accounting evidence** |
 | `executed_field_level_updates` | **Deterministic count estimate** from fields, levels, batch, and method steps |
 | `workspace_bytes` | **Implementation formula estimate**, not a measured peak-memory value |
@@ -392,8 +446,9 @@ break-even, hybrid, or recommendation claim.
    expected-failure evidence and never a passing current case.
 8. A BE state that would change the retained bottom `max(0,tmpa)` branch is
    outside the approved linear solve and is excluded.
-9. Partial Task 5 shards, interrupted runs, smoke runs, and rows lacking final
-   retained provenance or hashes cannot enter final aggregate tables.
+9. Partial Task 5 shards, interrupted runs, smoke runs, old/unversioned schema,
+   summary/sidecar pairs lacking a valid completion record, and rows lacking
+   final retained provenance or hashes cannot enter final aggregate tables.
 10. CPU timing cannot support a GPU speedup, occupancy, bandwidth,
     synchronization, or production whole-model claim.
 11. The nominal transported-field label cannot support field-count cost or
@@ -420,26 +475,29 @@ enough case keys to reproduce every exclusion.
 | Rows meeting `<5%` CI half-width | Report count and fraction | **PENDING** |
 | Rows stopped at 100 repetitions | Report count and fraction | **PENDING** |
 | Nonfinite or malformed output cells | 0 except defined empty cells | **PENDING** |
-| Combined raw CSV hash and size | Exact SHA-256 and bytes | **PENDING** |
+| Summary schema and run ID | `ndrop_summary_v2`; one validated run ID | **PENDING** |
+| Phase sidecar schema and coverage | `ndrop_phase_samples_v1`; exact repetition coverage | **PENDING** |
+| Shard completion records | 135 valid records for aligned 180-case shards | **PENDING** |
+| Merged summary and sidecar hashes and sizes | Exact SHA-256 and bytes for both | **PENDING** |
 | Clean optimized regression | PASS required | **PENDING** |
 
 ### Typical-mixing performance
 
-| Method | Levels | Active pairs | Batch | ACI interval | FE `nsubmix` | Median time/column-call | 95% CI | Repetitions | Eligibility |
+| Method | Levels | Nonzero aerosol pairs | Batch | ACI interval | FE `nsubmix` | Median time/column-call | 95% CI | Repetitions | Eligibility |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | **PENDING** |  |  |  |  |  |  |  |  |  |
 
 ### Strong-mixing performance
 
-| Method | Levels | Active pairs | Batch | ACI interval | FE `nsubmix` | Median time/column-call | 95% CI | Repetitions | Eligibility |
+| Method | Levels | Nonzero aerosol pairs | Batch | ACI interval | FE `nsubmix` | Median time/column-call | 95% CI | Repetitions | Eligibility |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---|
 | **PENDING** |  |  |  |  |  |  |  |  |  |
 
 ### Phase, workspace, and work accounting
 
-| Method | Setup | Factorization | Solve | Update | Diagnostics | Fence | Instrumentation overhead | Workspace estimate | Work-count estimate |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| **PENDING** |  |  |  |  |  |  |  |  |  |
+| Method | Setup | Factorization | Solve | Combined factorization/solve | Update | Diagnostics | Fence | Instrumentation overhead | Workspace estimate | Work-count estimate |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| **PENDING** |  |  |  |  |  |  |  |  |  |  |
 
 The final narrative must use complete uninstrumented time for comparisons and
 must label workspace and work counts as estimates.
@@ -463,13 +521,13 @@ If a target is not bracketed by eligible measured points, report
 ### Break-even FE substep count
 
 Break-even is the smallest measured FE `nsubmix` whose median runtime is at
-least the candidate runtime for the same levels, nominal active-pair input,
+least the candidate runtime for the same levels, nonzero-state occupancy,
 batch, mixing profile, and ACI interval. Any interpolation must be between
 adjacent measured FE points. Bootstrap uncertainty must be propagated to a
 threshold interval or set of supported adjacent values. This occupancy label
 must not be interpreted as a variable executed-field width.
 
-| Candidate | Mixing | Levels | Active pairs | Batch | ACI interval | Lower / point / upper break-even `nsubmix` | Eligible points used | Status |
+| Candidate | Mixing | Levels | Nonzero aerosol pairs | Batch | ACI interval | Lower / point / upper break-even `nsubmix` | Eligible points used | Status |
 |---|---|---:|---:|---:|---:|---|---|---|
 | IMEX | **PENDING** |  |  |  |  |  |  |  |
 | BE | **PENDING** |  |  |  |  |  |  |  |
@@ -653,8 +711,11 @@ are present or explicitly marked unavailable with a reason.
 | Machine model, CPU/architecture, hardware threads, OS version | **PENDING** |
 | Exact benchmark invocation(s), shard ranges, start/end time, and exit status | **PENDING** |
 | Benchmark executable SHA-256 | **PENDING** |
-| Raw shard inventory with size, row count, case-ID range, and SHA-256 | **PENDING** |
-| Combined CSV path, schema/header hash, row count, byte size, and SHA-256 | **PENDING** |
+| Identity-manifest path and SHA-256 | **PENDING** |
+| Raw summary/sidecar shard inventory with sizes, row counts, ranges, and SHA-256 | **PENDING** |
+| All 135 completion-record paths, counts, and SHA-256 values | **PENDING** |
+| Merged summary and sidecar paths, schema/header hashes, counts, sizes, and SHA-256 values | **PENDING** |
+| Final immutable manifest path and SHA-256 | **PENDING** |
 | Smoke/support/regression logs, commands, counts, and SHA-256 | **PENDING** |
 | Task 6 analysis source commit and tests | **PENDING** |
 | Exact analysis invocation, input hashes, and output hashes | **PENDING** |
@@ -688,14 +749,16 @@ are present or explicitly marked unavailable with a reason.
   implementation risk, or scientific uncertainty.
 - Workspace and work-count columns are formulas. They are not peak-memory,
   cache, bandwidth, energy, or hardware-counter measurements.
-- The `active_pairs` input changes nonzero-state occupancy, but every method
-  executes all 51 fields. No transported-field-count performance conclusion
-  is supported by this benchmark implementation.
-- IMEX factorization and solve are combined in the recorded solve phase; a
-  zero IMEX factorization field is not evidence of zero factorization cost.
-- Raw phase and fence timing samples are not serialized. Their reported
-  medians cannot be independently reconstructed, so phase-level comparisons
-  remain unavailable even if the full-region output completes.
+- The pre-remediation `active_pairs` input changes nonzero-state occupancy,
+  but every method executes all 25 aerosol pairs and 51 fields. Task 5R will
+  correct the labels and preserve that fixed width; no transported-field-count
+  performance conclusion is supported.
+- The pre-remediation artifact records IMEX's combined factorization and solve
+  work in the solve phase. Task 5R will expose a combined diagnostic phase and
+  leave separate values unavailable, but cannot decompose the operation.
+- Raw phase and fence timing samples are absent from pre-remediation output.
+  Task 5R requires a validated sidecar, yet even validated phase data remain
+  diagnostic and unavailable to comparative performance functions.
 - Earlier provisional cost ratios and hybrid ideas are hypotheses only and do
   not enter the final decision without the completed retained analysis.
 
@@ -703,5 +766,6 @@ are present or explicitly marked unavailable with a reason.
 
 | Date | Author/agent | Summary |
 |---|---|---|
+| 2026-08-25 | Codex | Recorded the pending Task 5R evidence-remediation contract: fixed executed width with occupancy-only labels, combined IMEX timing, raw phase sidecar, transactional manifests, and primary-timing-only comparative analysis. No performance conclusion was added. |
 | 2026-08-24 | Codex | Integrated the static Task 5 review limits: reclassified active-pair cases as nonzero-state occupancy, prohibited field-count scaling, and marked IMEX phase separation and raw phase/fence retention as unresolved without adding performance conclusions. |
 | 2026-08-24 | Codex | Drafted the Task 7 report structure from approved design, committed Task 2--5 sources, and retained Task 2--4 reviews; recorded executed Task 2--4 numerical evidence and left Task 5 timing, Task 6 analysis, break-even/hybrid results, and the final recommendation explicitly pending. |

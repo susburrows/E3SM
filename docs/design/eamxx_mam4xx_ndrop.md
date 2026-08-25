@@ -1886,6 +1886,138 @@ memory bandwidth, or synchronization cost. No result from this phase may be
 labeled GPU performance. Production relevance requires sampled EAMxx columns
 and later profiling on a representative GPU.
 
+#### Task 5 evidence-remediation amendment
+
+**Status: PENDING EXPLICIT APPROVAL. No benchmark-source implementation or
+new retained run is authorized by this amendment until the user approves this
+as-written section.**
+
+This amendment repairs three evidence-contract defects found by static review
+of Task 5 commit `dba6d00598d86a239a2bf2743d95325821c9378c`. It changes
+benchmark labels, timing diagnostics, serialization, and provenance only. It
+does not change an operator equation, numerical method, solver arithmetic,
+state transition, limiter, clipping rule, positivity threshold, boundary,
+coupling, or production EAMxx/MAM4xx interface.
+
+##### Fixed executed width and nonzero-state occupancy
+
+All methods continue to execute droplet number plus 25 interstitial/cloud-borne
+aerosol pairs, or 51 transported fields. The matrix input previously named
+`active_pairs` changes only which leading aerosol pairs are initialized
+nonzero. It must therefore be renamed `nonzero_aerosol_pairs`, and
+`transported_fields` must be replaced by `nonzero_state_fields`. Every summary
+row must satisfy
+
+\[
+n_{\mathrm{nonzero\ state}}=1+2n_{\mathrm{nonzero\ aerosol\ pairs}},
+\qquad
+n_{\mathrm{executed\ aerosol\ pairs}}=25,
+\qquad
+n_{\mathrm{executed\ transport\ fields}}=51.
+\]
+
+Every summary row declares `artifact_schema=ndrop_summary_v2` and contains `run_id`,
+`nonzero_aerosol_pairs`, `nonzero_state_fields`,
+`executed_aerosol_pairs=25`, and `executed_transport_fields=51`. Neither the
+analysis nor the report may call the occupancy input an executed width or use
+it to claim transported-width scaling. Occupancy sensitivity may be reported
+only under its explicit nonzero-state label.
+
+##### Linear-solver phase meanings
+
+The primary uninstrumented complete advance remains the only timing admitted
+to CPU speedup, matched-error, break-even, hybrid, or recommendation
+calculations. Instrumented phase and fence samples are diagnostic evidence
+only and may not substitute for primary time or support cross-method phase
+ratios.
+
+Each summary row has `linear_phase_mode` with exact method mapping:
+
+| Method | `linear_phase_mode` | Separate factorization | Separate solve | Combined factorization-solve |
+|---|---|---|---|---|
+| Forward Euler | `none` | unavailable | unavailable | unavailable |
+| IMEX Euler | `combined` | unavailable | unavailable | measured |
+| Backward Euler | `separate` | measured | measured | unavailable |
+
+The exact summary timing columns are
+`factorization_seconds_per_column`, `solve_seconds_per_column`, and
+`combined_factorization_solve_seconds_per_column`. Unavailable CSV values are
+blank, never numeric zero. The one IMEX combined accumulator receives both
+existing scalar-system observations: each begins before allocation and copying
+of that system's tridiagonal coefficient views and ends after its supported
+public serial `ekat::tridiag::thomas` factorization-and-solve call. Its
+cumulative value therefore contains the cloud and interstitial coefficient-
+view allocation/copy, both Thomas operations, and all right-hand-side solves.
+The implementation must not call EKAT `impl` helpers or introduce another
+solver merely to split this phase. Backward Euler retains its existing
+separate factorization and solve boundaries.
+
+##### Raw instrumented-sample sidecar
+
+Every benchmark invocation requires a run identifier matching
+`[A-Za-z0-9._-]{1,128}` and a phase-sample output path. The summary and sidecar
+carry the same run identifier. The `ndrop_phase_samples_v1` sidecar contains
+one row for every zero-based instrumented repetition of every summary row with
+`validation_ok=true`, including timed rows later excluded by eligibility.
+Rows with `validation_ok=false` have zero repetitions and no sidecar rows.
+
+Each sidecar row records `artifact_schema`, `run_id`, `case_id`, `method`,
+`linear_phase_mode`, `instrumented_repetition`, and seconds per column for the
+instrumented complete advance, setup, separate factorization, separate solve,
+combined factorization-solve, update, diagnostics, and the final fence.
+The exact timing names are `instrumented_seconds_per_column`,
+`setup_seconds_per_column`, `factorization_seconds_per_column`,
+`solve_seconds_per_column`,
+`combined_factorization_solve_seconds_per_column`,
+`update_seconds_per_column`, `diagnostics_seconds_per_column`, and
+`fence_seconds_per_column`.
+Method-inapplicable linear fields follow the same blank-value contract as the
+summary. Serialization occurs only after measurement and is outside every
+timed region. The sidecar instrumented total must equal the corresponding
+summary raw instrumented sample element by element; recomputing each phase and
+fence median with the benchmark's exact median algorithm must reproduce its
+summary value.
+
+##### Transaction, provenance, and retained-run rules
+
+A clean detached source commit, binary hash, locked-dependency provenance
+hash, compiler/build/machine identity, exact commands, schemas, run identifier,
+and output paths are bound in an immutable pre-run identity manifest. The
+retained run identifier is
+`task5-remediated-<UTC-YYYYMMDDTHHMMSSZ>-<12-character-source-SHA>`.
+Summary and sidecar shards are written as separate partial files. After a
+successful process exit, both are closed, validated, and hashed, then renamed.
+An authoritative per-shard completion JSON containing both paths, hashes,
+counts, run identifier, and identity-manifest hash is written and renamed
+last. A shard is nonexistent for analysis unless that completion record and
+both artifact hashes validate.
+
+The full 24,300-row run uses 180-case shards aligned to the nine-row method
+groups, producing 135 shard pairs. After all shard completion records pass,
+the summary is merged in case-ID order and the sidecar in
+`(case_id,instrumented_repetition)` order. A final immutable manifest records
+the merged hashes and complete coverage. Any Task 5 result produced before
+this amendment is historical pre-remediation evidence and may not be merged
+into or substituted for the remediated dataset.
+
+##### Amendment validation and failure behavior
+
+Tests must prove exact occupancy sets and formulas, constant executed width,
+unique composite keys and exact matrix marginals, method/phase-mode mapping,
+blank-value rules, required CLI arguments, write/flush failures, invalid-row
+sample absence, timed-but-ineligible sample retention, unique contiguous
+sidecar repetition keys, elementwise summary/sidecar equality, and exact phase
+median reconstruction. Old, unversioned, incomplete, mixed-run, stale-hash, or
+completion-marker-free artifacts fail closed before analysis.
+
+Fresh debug ASan/UBSan and optimized complete suites must pass, followed by a
+full optimized numerical rerun with the exact timing binary, peer-style review,
+and a second focused pass. Temporary worktrees and builds remain below
+`/Users/burr114/e3sm-scratch/`; retained artifacts and provenance remain below
+`/Users/burr114/e3sm-results/`. Actual matched-error, break-even, hybrid, and
+recommendation calculations remain blocked until the remediated retained run
+passes this contract.
+
 ### Open issues for the proposed study
 
 | Issue | Required decision or evidence | Interim treatment | Blocks |
@@ -1897,6 +2029,7 @@ and later profiling on a representative GPU.
 | Downstream fixer behavior | Trace whether EAMxx later masks or redistributes Forward Euler clipping errors | Report standalone Forward Euler raw and clipped ledgers with no fixer | Coupled scientific interpretation only |
 | GPU implementation | Production-representative backend, solver, compiler, precision, and GPU | Defer until local screening supports it | GPU performance conclusion |
 | Runtime distributions | Sampled coefficients and `nsubmix` from EAMxx | Synthetic typical/strong profiles | Production representativeness |
+| Task 5 evidence remediation | Explicit user approval of the pending amendment above, then reviewed implementation and a new retained run | Preserve existing Task 5 artifacts as historical; make no performance conclusion | Task 5 final evidence and Tasks 6--8 |
 
 ## Proposed Diagnostics for Substepping Experiments
 
@@ -2399,6 +2532,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-25 | Codex | Added the pending Task 5 evidence-remediation amendment after static review: fixed the executed-width contract at 25 aerosol pairs/51 fields while relabeling the varying input as nonzero-state occupancy; specified method-explicit linear phase modes with supported combined IMEX coefficient-copy/factorization/solve timing; required a repetition-level raw phase/fence sidecar; bound paired artifacts through immutable identity and completion manifests; and restricted all comparisons to primary uninstrumented time. Equations, solver arithmetic, and production code remain unchanged; explicit approval is required before implementation. |
 | 2026-08-24 | Codex | Synchronized the Task 4 common cross-method gate as built: independent adaptive Dormand--Prince 5(4) physical-RHS oracle, analytic and two-tolerance reference checks, complete 1,875-case Cartesian matrix, per-field errors and diagnostic ledgers, all-method raw-positivity and fail-closed norm gates, three-run bitwise determinism, all-field first-order fits, pairwise Richardson common-solution checks, deterministic CSV/table outputs, and clean debug/sanitizer plus optimized evidence. FE, IMEX, and BE pass Task 4; only the local CPU timing phase is authorized next. |
 | 2026-08-24 | Codex | Synchronized the Task 3 host Backward Euler implementation as built: signed 2-by-2 block rows, exact matrix-family reuse, unsafe-pivot failure, scalar droplet solve after modal-number blocks, independent dense and physical-equation oracles, raw positivity before projection, fail-closed diagnostics, bottom-stencil inspection, analytic first-order convergence, and clean locked-stack debug/sanitizer plus optimized evidence. The method-local gate passes; production physics remains unchanged. |
 | 2026-08-24 | Codex | Synchronized the Task 2 FE/IMEX implementation as built: controller-only substep selection, signed total/clipping/operator ledgers, like-unit independent residuals, explicit roundoff/material classifications, fail-closed diagnostic arithmetic, scaled and zero-ledger tests, three-run bitwise state checks, and the locked current-MAM4xx rank-3 adapter at `top_lev=0,1,6`. Debug/sanitizer and optimized standalone gates pass; production physics remains unchanged. |

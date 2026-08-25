@@ -82,6 +82,40 @@ None found by the code-and-document-only review.
    dimension value paired with a missing value could pass. The final evidence
    audit below must perform the stronger uniqueness and exact-set checks.
 
+## Pending Task 5R remediation contract
+
+**Status: PENDING EXPLICIT APPROVAL AND IMPLEMENTATION.** The design amendment
+records the selected disposition of all three Important findings, but the
+findings remain open until the corresponding source, tests, reviews, and
+retained rerun pass this checklist. The pre-remediation run bound to
+`dba6d00598d86a239a2bf2743d95325821c9378c` is immutable historical evidence
+and must never be merged into the remediated dataset.
+
+- [ ] Require summary rows to declare `artifact_schema=ndrop_summary_v2`, a
+  valid `run_id`, `nonzero_aerosol_pairs`, `nonzero_state_fields`,
+  `executed_aerosol_pairs=25`, and `executed_transport_fields=51`. Remove the
+  ambiguous `active_pairs` and `transported_fields` columns, and prohibit all
+  executed-width scaling conclusions.
+- [ ] Require `linear_phase_mode=none` for FE, `combined` for IMEX, and
+  `separate` for BE. For IMEX, time coefficient-copy/allocation plus both
+  supported EKAT serial Thomas operations only as combined
+  factorization-plus-solve; unavailable separate values are blank, not zero.
+- [ ] Require a normalized `ndrop_phase_samples_v1` sidecar with one row for
+  every instrumented repetition of every `validation_ok=true` summary row,
+  including timed-but-ineligible rows. Invalid rows have `repetitions=0` and
+  no sidecar rows.
+- [ ] Require a pre-run identity manifest, paired partial summary/sidecar
+  outputs, validation and hashes for both files, and a per-shard completion
+  marker written last. A shard is nonexistent for analysis unless its marker
+  and both hashes validate.
+- [ ] Use 180-case shards aligned to complete nine-row method groups, yielding
+  exactly 135 shard pairs and completion records. Merge deterministically by
+  case ID and instrumented repetition, then bind both merged artifacts in a
+  final immutable manifest.
+- [ ] Permit speedup, matched-error, break-even, hybrid, and recommendation
+  calculations to consume only complete primary uninstrumented timings.
+  Instrumented phase/fence observations remain diagnostic-only evidence.
+
 ## Gate rule
 
 - [ ] Do not issue a final PASS while any Critical or Important finding above
@@ -176,13 +210,15 @@ None found by the code-and-document-only review.
 - [ ] Verify identical initial states, active levels, coefficients, frozen ACI
   intervals, and production-feasible layouts across methods. Confirm no matrix
   or factorization is reused across columns.
-- [ ] Resolve Important finding 1 before interpreting active-pair rows as
-  execution widths. Add tests proving that 1/4/8/16/25 pairs execute exactly
-  3/9/17/33/51 transported fields, or relabel and exclude the nominal axis from
-  field-count performance conclusions.
-- [ ] Resolve Important finding 2. For each method, document exactly what setup,
-  factorization, solve, update/positivity, diagnostics, and fence phases contain
-  and prove phase accounting does not omit or double count work.
+- [ ] Resolve Important finding 1 by relabeling the varying input as
+  `nonzero_aerosol_pairs`, deriving `nonzero_state_fields` as
+  `1 + 2*nonzero_aerosol_pairs`, and proving that every method still executes
+  exactly 25 aerosol pairs and 51 transport fields. Prohibit width-scaling
+  conclusions.
+- [ ] Resolve Important finding 2 with the exact phase modes and nullability
+  contract above. Prove IMEX's combined phase encloses matrix-view
+  allocation/copy and both public EKAT Thomas calls without changing solver
+  arithmetic; retain BE's existing separate boundaries.
 - [ ] Verify primary time is seconds per column-call and is the only timing used
   for CPU speedup. Instrumented and phase times may diagnose overhead only.
 - [ ] Verify operation counters against hand-derived counts for representative
@@ -197,29 +233,39 @@ None found by the code-and-document-only review.
 - [ ] Accept only a completed full run or an exact, manifest-verified partition
   of full-run chunks. Require 24,300 data rows plus one header.
 - [ ] Require unique contiguous `case_id` values `0..24299` and a unique
-  composite key `(nlev, active_pairs, batch_size, mixing_index, mixing_scale,
-  dt, method, forced_fe_substeps)`.
+  composite key `(nlev, nonzero_aerosol_pairs, batch_size, mixing_index,
+  mixing_scale, dt, method, forced_fe_substeps)`.
 - [ ] Require exact method counts: 18,900 FE, 2,700 IMEX, and 2,700 BE.
 - [ ] Require exactly 2,700 physical groups. Every group must contain FE
   `nsubmix={1,2,3,5,8,16,21}` exactly once, IMEX exactly once, and BE exactly
   once.
 - [ ] Require exact dimension sets with no missing, duplicate, or extra values:
-  `nlev={1,2,3,16,32,64,72,127,128}`; `active_pairs={1,4,8,16,25}`;
+  `nlev={1,2,3,16,32,64,72,127,128}`;
+  `nonzero_aerosol_pairs={1,4,8,16,25}`;
   `batch_size={1,16,64,256,1024}`; mixing `(index,scale)={(0,0.05),(1,0.5)}`;
   `dt={33.33,50,75,100,150,300}`; FE substeps as above and zero for IMEX/BE.
 - [ ] Verify marginal counts independently: 2,700 rows per level; 4,860 per
   pair count; 4,860 per batch; 12,150 per mixing regime; 4,050 per ACI interval;
   and 2,700 per FE substep.
-- [ ] Require `transported_fields == 1 + 2*active_pairs`, while separately
-  enforcing the executed-width resolution from Important finding 1.
-- [ ] Freeze an exact schema/version. Reject missing/extra columns, duplicate
+- [ ] Require `nonzero_state_fields == 1 + 2*nonzero_aerosol_pairs`,
+  `executed_aerosol_pairs == 25`, and `executed_transport_fields == 51` on
+  every row.
+- [ ] Require `artifact_schema=ndrop_summary_v2` and a `run_id` matching
+  `[A-Za-z0-9._-]{1,128}` on every summary row. Reject `ndrop_summary_v1`,
+  unversioned data, mixed run IDs, and missing or extra rows.
+- [ ] Enforce linear-phase nullability exactly: FE has mode `none` and all
+  three linear columns blank; IMEX has mode `combined`, only the combined
+  column numeric; BE has mode `separate`, factorization and solve numeric and
+  combined blank.
+- [ ] Freeze both exact schema versions. Reject missing/extra columns, duplicate
   column names, malformed CSV quoting, inconsistent row widths, noncanonical
   booleans/statuses, nonfinite numeric text, or semicolon-list parse failures.
 - [ ] Require all row metadata to agree with the one run manifest and optimized
   binary: compiler, platform, Kokkos execution space, hardware threads,
   warmups, repetition limits, bootstrap count, and source/binary identity.
-- [ ] Recompute and record the final CSV byte count, row count, SHA-256, and a
-  canonical content hash after parse-and-reserialize validation.
+- [ ] Recompute and record byte counts, row counts, SHA-256 values, and
+  canonical content hashes for the merged summary and phase sidecar after
+  parse-and-reserialize validation.
 
 ## 6. Warmup, repetition, bootstrap, and interleaving policy
 
@@ -254,10 +300,22 @@ None found by the code-and-document-only review.
 - [ ] Require raw primary and instrumented sample-list lengths to match
   `repetitions`; no blank, nonfinite, negative, silently truncated, reordered,
   rounded, or deduplicated values are allowed.
-- [ ] Resolve Important finding 3 by retaining raw setup, factorization, solve,
-  update/positivity, diagnostics, and fence samples with explicit case,
-  repetition, method, units, and instrumented-run keys. Independently recompute
-  every reported phase median.
+- [ ] Resolve Important finding 3 with `ndrop_phase_samples_v1`. Require unique,
+  contiguous `(run_id, case_id, instrumented_repetition)` keys and raw
+  instrumented total, setup, factorization, solve, combined
+  factorization-plus-solve, update/positivity, diagnostics, and fence seconds
+  per column for every required repetition. Require the exact timing fields
+  `instrumented_seconds_per_column`, `setup_seconds_per_column`,
+  `factorization_seconds_per_column`, `solve_seconds_per_column`,
+  `combined_factorization_solve_seconds_per_column`,
+  `update_seconds_per_column`, `diagnostics_seconds_per_column`, and
+  `fence_seconds_per_column`.
+- [ ] Require sidecar coverage for every `validation_ok=true` summary row,
+  including timed-but-ineligible rows, and none for invalid rows. Require each
+  sidecar instrumented total to equal the corresponding summary raw
+  instrumented sample element by element.
+- [ ] Independently reconstruct every summary phase/fence median using the
+  exact C++ median algorithm and require exact method-specific nullability.
 - [ ] Require full time, phase times, and fence time to be finite and
   nonnegative. Investigate impossible ordering or phase sums; account for timer
   overhead and any intentionally unclassified interval.
@@ -268,8 +326,9 @@ None found by the code-and-document-only review.
 - [ ] Do not infer a successful measurement from process exit alone. Reconcile
   the executable's invalid-row total with parsed row statuses and inspect every
   distinct failure/exclusion message.
-- [ ] Bind output to source/dependencies/build with the run manifest; compiler
-  and platform strings embedded in a CSV are not sufficient provenance.
+- [ ] Bind both outputs to source/dependencies/build with the identity manifest,
+  per-shard completion records, and final manifest; compiler and platform
+  strings embedded in a CSV are not sufficient provenance.
 
 ## 8. Richardson errors and exclusions
 
@@ -302,10 +361,13 @@ None found by the code-and-document-only review.
   test defaults/overrides, or any other reduced policy from the full dataset.
 - [ ] Do not append a new run to an old CSV or overwrite an existing retained
   file. Reject duplicate headers and embedded partial-run boundaries.
-- [ ] If full execution is chunked, require identical source/dependency/binary
-  hashes and timing-policy/environment metadata across chunks; exact disjoint
-  case ranges; complete `0..24299` coverage; no overlap; one documented merge;
-  and hashes for every original chunk plus the merged artifact.
+- [ ] Require exactly 135 aligned 180-case shards. For each shard, require
+  identical source/dependency/binary hashes and timing-policy/environment
+  metadata; exact disjoint case ranges; a validated summary/sidecar pair; and
+  a completion record created only after both final files and hashes exist.
+- [ ] Require complete `0..24299` coverage, no overlap, one deterministic
+  merge, and hashes for every original summary, sidecar, completion record,
+  merged artifact, and manifest.
 - [ ] Reject chunks from different builds, machines, execution spaces,
   compiler flags, thread settings, dates after code changes, pilot parameters,
   or source cleanliness states.
@@ -327,7 +389,8 @@ None found by the code-and-document-only review.
   partial matrices, and stale hashes.
 - [ ] Analyze exact error targets `{1e-2,3e-3,1e-3,3e-4,1e-4}` only where
   bracketed by eligible measured points. Never extrapolate in error, FE
-  `nsubmix`, level, field count, batch, mixing regime, ACI interval, or hardware.
+  `nsubmix`, level, nonzero-state occupancy, batch, mixing regime, ACI
+  interval, or hardware.
 - [ ] Define break-even as the smallest measured FE `nsubmix` whose median
   runtime is at least the candidate median. Interpolate only between adjacent
   measured FE values from `{1,2,3,5,8,16,21}` and only within a valid bracket.
@@ -336,9 +399,12 @@ None found by the code-and-document-only review.
 - [ ] Carry raw-sample/bootstrap uncertainty through runtime ratios,
   runtime-versus-error selection, interpolation, and break-even. Report an
   interval or indeterminate classification when uncertainty changes the answer.
-- [ ] Do not analyze cost by transported-variable count until Important finding
-  1 is resolved. A nominal active/nonzero-pair label is not a measured
-  variable-width execution.
+- [ ] Never analyze cost by transported-variable count from this screen. The
+  nonzero-state-occupancy axis is not a variable-width execution, even after
+  its labels and fixed executed-width metadata are corrected.
+- [ ] Keep phase diagnostics in a representation that cannot be converted to
+  the primary timing estimate. Comparative functions must reject phase data,
+  old schemas, incomplete artifact pairs, and missing/stale manifests.
 - [ ] Treat the FE/IMEX hybrid as a threshold and packing/workload-variation
   estimate only. Test packing overhead and workload-sensitivity arithmetic with
   hand-derived fixtures; do not call it an implemented or measured hybrid.
