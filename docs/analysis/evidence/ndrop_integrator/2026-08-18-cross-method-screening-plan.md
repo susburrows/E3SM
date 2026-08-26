@@ -196,10 +196,13 @@ for Task 6 or the final recommendation.
 
 ### Task 5R: Remediate the retained-evidence contract
 
-**PENDING EXPLICIT APPROVAL:** update the authoritative design with the Task 5
-evidence-remediation amendment and stop for user approval before changing
-benchmark source. Commit `dba6d00598d86a239a2bf2743d95325821c9378c` and all
-results produced from it remain historical pre-remediation evidence.
+**APPROVED AND IMPLEMENTED; RETAINED RUN PENDING.** The user approved the
+authoritative design amendment at
+`61ae8249af0eb1c7e2fbc5d2da98a80dd1cff0a7`. Paired benchmark/analyzer support
+was committed at `7d1252e2e9`, transaction tooling at `4902313371`, and the
+peer-review fixes at `d55ef90e46`. Commit
+`dba6d00598d86a239a2bf2743d95325821c9378c` and all results produced from it
+remain historical pre-remediation evidence.
 
 After approval, replace the nominal width labels with
 `nonzero_aerosol_pairs` and `nonzero_state_fields`, add constant executed-width
@@ -221,6 +224,11 @@ and hash both, rename both, then create a per-shard completion JSON last. A
 shard without a valid completion record and both matching hashes does not
 exist for analysis.
 
+Copy the exact executable and locked-dependency provenance record exclusively
+into the new retained run's `inputs` directory before sealing the identity.
+Bind every command and hash to those retained copies so final validation does
+not depend on a scratch build directory.
+
 Add fail-closed schema/provenance validation and keep phase diagnostics in a
 type/path that cannot enter CPU speedup, matched-error, break-even, hybrid, or
 recommendation calculations. Use only primary uninstrumented complete-advance
@@ -231,6 +239,13 @@ Use 180-case shards aligned to nine-row groups, one serial worker, 10 warmups,
 scratch and results, and new immutable scratch/results locations. Do not begin
 Task 6 until the merged summary, phase sidecar, completion records, and final
 manifest pass the amended gate.
+
+The pre-retained review gates executed on 2026-08-25 passed 35 focused Python
+tests, 13/13 debug ASan/UBSan tests with no sanitizer finding, 13/13 optimized
+tests, and 5/5 tests in the explicit optimized numerical gate. The second
+focused review found no remaining Critical or Important implementation issue.
+These runs do not replace the pending clean-detached, exact-binary validation
+or the 135-shard retained execution.
 
 ## Task 6: Analyze error-cost and break-even behavior
 

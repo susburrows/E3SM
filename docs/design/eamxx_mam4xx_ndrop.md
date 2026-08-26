@@ -1888,9 +1888,12 @@ and later profiling on a representative GPU.
 
 #### Task 5 evidence-remediation amendment
 
-**Status: PENDING EXPLICIT APPROVAL. No benchmark-source implementation or
-new retained run is authorized by this amendment until the user approves this
-as-written section.**
+**Status: APPROVED AND IMPLEMENTED; RETAINED EXECUTION PENDING.** The user
+approved this amendment at commit
+`61ae8249af0eb1c7e2fbc5d2da98a80dd1cff0a7` on 2026-08-25. The standalone
+benchmark, analyzer, and transaction tooling implement it through review-fix
+commit `d55ef90e46`; no remediated retained performance run has yet passed the
+paired-artifact contract.
 
 This amendment repairs three evidence-contract defects found by static review
 of Task 5 commit `dba6d00598d86a239a2bf2743d95325821c9378c`. It changes
@@ -1985,6 +1988,10 @@ hash, compiler/build/machine identity, exact commands, schemas, run identifier,
 and output paths are bound in an immutable pre-run identity manifest. The
 retained run identifier is
 `task5-remediated-<UTC-YYYYMMDDTHHMMSSZ>-<12-character-source-SHA>`.
+Before the manifest is sealed, the exact executable and dependency-provenance
+record are copied exclusively into the new retained run's `inputs` directory;
+the manifest and every shard command bind those retained copies. This prevents
+later validation from depending on disposable scratch build products.
 Summary and sidecar shards are written as separate partial files. After a
 successful process exit, both are closed, validated, and hashed, then renamed.
 An authoritative per-shard completion JSON containing both paths, hashes,
@@ -2018,6 +2025,16 @@ and a second focused pass. Temporary worktrees and builds remain below
 recommendation calculations remain blocked until the remediated retained run
 passes this contract.
 
+The pre-retained implementation review on 2026-08-25 passed 35 focused Python
+tests, all 13 registered debug ASan/UBSan tests with no sanitizer finding, all
+13 optimized tests, and the explicit five-test optimized numerical gate. The
+review also proved expected diagnostic text for every fail-closed CLI test,
+canonical output-path separation, exact C++ median reconstruction, stopping-
+policy consistency, and retained executable/provenance copying. These are
+implementation-validation results only. A clean detached build, exact timing-
+binary numerical rerun, fully paired 135-shard run, final manifest, and Task 6
+analysis remain pending.
+
 ### Open issues for the proposed study
 
 | Issue | Required decision or evidence | Interim treatment | Blocks |
@@ -2029,7 +2046,7 @@ passes this contract.
 | Downstream fixer behavior | Trace whether EAMxx later masks or redistributes Forward Euler clipping errors | Report standalone Forward Euler raw and clipped ledgers with no fixer | Coupled scientific interpretation only |
 | GPU implementation | Production-representative backend, solver, compiler, precision, and GPU | Defer until local screening supports it | GPU performance conclusion |
 | Runtime distributions | Sampled coefficients and `nsubmix` from EAMxx | Synthetic typical/strong profiles | Production representativeness |
-| Task 5 evidence remediation | Explicit user approval of the pending amendment above, then reviewed implementation and a new retained run | Preserve existing Task 5 artifacts as historical; make no performance conclusion | Task 5 final evidence and Tasks 6--8 |
+| Task 5 evidence remediation | Approved amendment and reviewed implementation are complete; a new retained run must still pass | Preserve existing Task 5 artifacts as historical; make no performance conclusion | Task 5 final evidence and Tasks 6--8 |
 
 ## Proposed Diagnostics for Substepping Experiments
 
@@ -2532,6 +2549,7 @@ current run matrix.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-08-25 | Codex | Synchronized the approved Task 5R amendment as implemented through `d55ef90e46`: retained `ndrop_summary_v2` and `ndrop_phase_samples_v1` semantics, fixed executed-width/occupancy labels, combined IMEX timing, paired completion manifests, diagnostic-only phase typing, exact C++ median and stopping-policy validation, canonical output separation, and retained copies of the exact executable and dependency record. Pre-retained Python, ASan/UBSan, optimized, and optimized numerical gates pass; the clean detached retained run and all performance conclusions remain pending. |
 | 2026-08-25 | Codex | Added the pending Task 5 evidence-remediation amendment after static review: fixed the executed-width contract at 25 aerosol pairs/51 fields while relabeling the varying input as nonzero-state occupancy; specified method-explicit linear phase modes with supported combined IMEX coefficient-copy/factorization/solve timing; required a repetition-level raw phase/fence sidecar; bound paired artifacts through immutable identity and completion manifests; and restricted all comparisons to primary uninstrumented time. Equations, solver arithmetic, and production code remain unchanged; explicit approval is required before implementation. |
 | 2026-08-24 | Codex | Synchronized the Task 4 common cross-method gate as built: independent adaptive Dormand--Prince 5(4) physical-RHS oracle, analytic and two-tolerance reference checks, complete 1,875-case Cartesian matrix, per-field errors and diagnostic ledgers, all-method raw-positivity and fail-closed norm gates, three-run bitwise determinism, all-field first-order fits, pairwise Richardson common-solution checks, deterministic CSV/table outputs, and clean debug/sanitizer plus optimized evidence. FE, IMEX, and BE pass Task 4; only the local CPU timing phase is authorized next. |
 | 2026-08-24 | Codex | Synchronized the Task 3 host Backward Euler implementation as built: signed 2-by-2 block rows, exact matrix-family reuse, unsafe-pivot failure, scalar droplet solve after modal-number blocks, independent dense and physical-equation oracles, raw positivity before projection, fail-closed diagnostics, bottom-stencil inspection, analytic first-order convergence, and clean locked-stack debug/sanitizer plus optimized evidence. The method-local gate passes; production physics remains unchanged. |

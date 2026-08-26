@@ -75,6 +75,62 @@ Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
 the Forward Euler, IMEX, Backward Euler, common cross-scheme, and exact-current
 executables with CTest.
 
+## Task 5R paired evidence workflow
+
+The approved Task 5R implementation emits `ndrop_summary_v2` plus the
+repetition-level `ndrop_phase_samples_v1` sidecar. The varying case dimension
+is nonzero-state occupancy; every method still executes 25 aerosol pairs and
+51 transport fields. IMEX records coefficient-view copy/allocation and both
+public EKAT Thomas operations as one combined diagnostic phase. Only the
+uninstrumented complete-advance timing may enter comparative analysis.
+
+`ndrop_artifacts.py` is the fail-closed retained-run entry point. Run it only
+from a clean detached source checkout. `create-identity` copies the exact
+optimized executable and locked-dependency provenance record into a new
+results directory below `/Users/burr114/e3sm-results/`, binds every one of the
+135 commands to those retained copies, and seals `identity.json`. A typical
+invocation has this form; replace the uppercase example tokens, and require the
+run ID's final 12 lowercase hexadecimal characters to equal the clean detached
+source SHA prefix:
+
+```bash
+python3 ndrop_artifacts.py create-identity \
+  --run-id task5-remediated-20260826T000000Z-0123456789ab \
+  --source-root /Users/burr114/e3sm-scratch/ndrop-screening/worktrees/CLEAN_SOURCE \
+  --binary /Users/burr114/e3sm-scratch/ndrop-screening/build/RELEASE_BUILD/benchmark_ndrop_integrators \
+  --dependency-provenance /Users/burr114/e3sm-results/ndrop-screening/provenance/dependencies-current.json \
+  --compiler 'AppleClang <version>' --compiler-flag=-O3 \
+  --compiler-flag=-DNDEBUG --machine '<machine>' \
+  --platform '<platform>' --execution-space Serial \
+  --validation-command '<exact completed validation command>' \
+  --scratch-root /Users/burr114/e3sm-scratch/ndrop-screening \
+  --output-root /Users/burr114/e3sm-results/ndrop-screening/RUN_DIRECTORY
+```
+
+Run each exact shard start (`0,180,...,24120`) with `run-shard`, then merge and
+revalidate the authoritative final manifest:
+
+```bash
+python3 ndrop_artifacts.py run-shard \
+  --identity /Users/burr114/e3sm-results/ndrop-screening/RUN_DIRECTORY/identity.json \
+  --case-start ALIGNED_CASE_START
+python3 ndrop_artifacts.py merge \
+  --identity /Users/burr114/e3sm-results/ndrop-screening/RUN_DIRECTORY/identity.json
+python3 ndrop_artifacts.py validate-final \
+  --identity /Users/burr114/e3sm-results/ndrop-screening/RUN_DIRECTORY/identity.json \
+  --final-manifest /Users/burr114/e3sm-results/ndrop-screening/RUN_DIRECTORY/final_manifest.json
+```
+
+An interrupted or malformed pair has no valid completion record and therefore
+does not exist for analysis. No command overwrites retained input, shard,
+completion, merge, or final-manifest artifacts.
+
+The 2026-08-25 pre-retained implementation review passed 35 Python tests,
+13/13 debug ASan/UBSan tests, 13/13 optimized tests, and the five-test optimized
+numerical gate. The reviewed implementation ends at `d55ef90e46`. These are
+validation results, not retained timing evidence; the clean-detached run and
+all performance conclusions remain pending.
+
 The current adapter validates the repaired current-MAM4xx `top_lev=0` path.
 The archived `1b02f272...` `top_lev=0` expected failure and its historical
 `enable_aero_vertical_mix=false` defect are explicitly excluded from the

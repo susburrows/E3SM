@@ -82,37 +82,41 @@ None found by the code-and-document-only review.
    dimension value paired with a missing value could pass. The final evidence
    audit below must perform the stronger uniqueness and exact-set checks.
 
-## Pending Task 5R remediation contract
+## Implemented Task 5R remediation contract
 
-**Status: PENDING EXPLICIT APPROVAL AND IMPLEMENTATION.** The design amendment
-records the selected disposition of all three Important findings, but the
-findings remain open until the corresponding source, tests, reviews, and
-retained rerun pass this checklist. The pre-remediation run bound to
+**Status: IMPLEMENTATION REVIEW PASSED; RETAINED EXECUTION PENDING.** The user
+approved the design amendment at `61ae8249af`; implementation and transaction
+support are complete through `d55ef90e46`. A checked item in this section means
+the source-and-test contract is implemented; it does not assert that the final
+135-shard run exists. The three original Important findings are resolved in
+code, but final evidence remains blocked until the clean detached retained run
+passes every applicable unchecked item below. The pre-remediation run bound to
 `dba6d00598d86a239a2bf2743d95325821c9378c` is immutable historical evidence
-and must never be merged into the remediated dataset.
+and must never be merged into the remediated dataset. The implementation review
+record is [Task 5R evidence-remediation code review](task5r_code_review_20260825.md).
 
-- [ ] Require summary rows to declare `artifact_schema=ndrop_summary_v2`, a
+- [x] Require summary rows to declare `artifact_schema=ndrop_summary_v2`, a
   valid `run_id`, `nonzero_aerosol_pairs`, `nonzero_state_fields`,
   `executed_aerosol_pairs=25`, and `executed_transport_fields=51`. Remove the
   ambiguous `active_pairs` and `transported_fields` columns, and prohibit all
   executed-width scaling conclusions.
-- [ ] Require `linear_phase_mode=none` for FE, `combined` for IMEX, and
+- [x] Require `linear_phase_mode=none` for FE, `combined` for IMEX, and
   `separate` for BE. For IMEX, time coefficient-copy/allocation plus both
   supported EKAT serial Thomas operations only as combined
   factorization-plus-solve; unavailable separate values are blank, not zero.
-- [ ] Require a normalized `ndrop_phase_samples_v1` sidecar with one row for
+- [x] Require a normalized `ndrop_phase_samples_v1` sidecar with one row for
   every instrumented repetition of every `validation_ok=true` summary row,
   including timed-but-ineligible rows. Invalid rows have `repetitions=0` and
   no sidecar rows.
-- [ ] Require a pre-run identity manifest, paired partial summary/sidecar
+- [x] Require a pre-run identity manifest, paired partial summary/sidecar
   outputs, validation and hashes for both files, and a per-shard completion
   marker written last. A shard is nonexistent for analysis unless its marker
   and both hashes validate.
-- [ ] Use 180-case shards aligned to complete nine-row method groups, yielding
+- [x] Use 180-case shards aligned to complete nine-row method groups, yielding
   exactly 135 shard pairs and completion records. Merge deterministically by
   case ID and instrumented repetition, then bind both merged artifacts in a
   final immutable manifest.
-- [ ] Permit speedup, matched-error, break-even, hybrid, and recommendation
+- [x] Permit speedup, matched-error, break-even, hybrid, and recommendation
   calculations to consume only complete primary uninstrumented timings.
   Instrumented phase/fence observations remain diagnostic-only evidence.
 
@@ -162,6 +166,15 @@ and must never be merged into the remediated dataset.
   of every retained output.
 
 ## 2. Independent debug/ASan/UBSan and optimized suites
+
+> Interim implementation review, not the final clean-checkout gate: on
+> 2026-08-25 the review-fixed source passed 35 focused Python tests, 13/13
+> debug ASan/UBSan tests with no sanitizer finding, 13/13 optimized tests, and
+> 5/5 tests in the explicit optimized numerical gate. The exact review-fix
+> commit is `d55ef90e46`; the release validation executable SHA-256 was
+> `8bc3c27b03a8a44d962893164ab514d1b7b89092e6a2285988e0f9bee919f6a7`.
+> Final boxes remain unchecked until a clean detached checkout, archived logs,
+> and the exact retained timing binary satisfy them.
 
 - [ ] Configure fresh build directories under the approved scratch root. Do
   not reuse Task 5 build products.
