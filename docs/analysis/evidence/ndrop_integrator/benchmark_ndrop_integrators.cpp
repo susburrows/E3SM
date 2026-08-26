@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <filesystem>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -160,6 +161,22 @@ bool valid_run_id(const std::string &run_id) {
   });
 }
 
+bool paths_refer_to_same_output(const std::string &left,
+                                const std::string &right) {
+  std::error_code left_error;
+  std::error_code right_error;
+  const auto normalized_left =
+      std::filesystem::weakly_canonical(std::filesystem::absolute(left),
+                                        left_error);
+  const auto normalized_right =
+      std::filesystem::weakly_canonical(std::filesystem::absolute(right),
+                                        right_error);
+  if (left_error || right_error) {
+    throw std::invalid_argument("output paths cannot be normalized");
+  }
+  return normalized_left == normalized_right;
+}
+
 Arguments parse_arguments(const int argc, char **argv) {
   Arguments arguments;
   bool repetitions_overridden = false;
@@ -217,7 +234,8 @@ Arguments parse_arguments(const int argc, char **argv) {
   if (arguments.phase_samples_output_path.empty()) {
     throw std::invalid_argument("--phase-samples-output is required");
   }
-  if (arguments.phase_samples_output_path == arguments.output_path) {
+  if (paths_refer_to_same_output(arguments.phase_samples_output_path,
+                                 arguments.output_path)) {
     throw std::invalid_argument(
         "--output and --phase-samples-output must be different paths");
   }

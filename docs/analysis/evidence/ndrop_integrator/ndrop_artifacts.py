@@ -261,6 +261,65 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _copy_exclusive(source: Path, destination: Path, mode: int) -> None:
+    source_path = Path(source)
+    destination_path = Path(destination)
+    try:
+        source_stream = source_path.open("rb")
+    except OSError as error:
+        raise ArtifactError("cannot read {}: {}".format(source_path, error))
+    try:
+        descriptor = os.open(
+            str(destination_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode
+        )
+    except FileExistsError:
+        source_stream.close()
+        raise ArtifactError("refusing to overwrite {}".format(destination_path))
+    except OSError as error:
+        source_stream.close()
+        raise ArtifactError("cannot create {}: {}".format(destination_path, error))
+    try:
+        with source_stream, os.fdopen(descriptor, "wb") as destination_stream:
+            shutil.copyfileobj(source_stream, destination_stream, 1024 * 1024)
+            destination_stream.flush()
+            os.fsync(destination_stream.fileno())
+        os.chmod(destination_path, mode)
+        _fsync_directory(destination_path.parent)
+    except OSError as error:
+        raise ArtifactError("cannot retain {}: {}".format(destination_path, error))
+
+
+def prepare_retained_inputs(
+    output_root: Path,
+    benchmark_binary: Path,
+    dependency_provenance: Path,
+) -> Tuple[Path, Path]:
+    """Copy the exact executable and dependency record into a new run root."""
+
+    root = Path(_absolute(output_root))
+    binary = Path(_absolute(benchmark_binary))
+    provenance = Path(_absolute(dependency_provenance))
+    if not binary.is_file() or not os.access(binary, os.X_OK):
+        raise ArtifactError("retained benchmark binary must be an executable file")
+    if not provenance.is_file():
+        raise ArtifactError("retained dependency provenance must be a regular file")
+    if root.exists() and any(root.iterdir()):
+        raise ArtifactError("refusing to prepare inputs in a nonempty run directory")
+    inputs = root / "inputs"
+    try:
+        inputs.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        raise ArtifactError("refusing to reuse retained input directory {}".format(inputs))
+    except OSError as error:
+        raise ArtifactError("cannot create retained input directory: {}".format(error))
+    retained_binary = inputs / "benchmark_ndrop_integrators"
+    retained_provenance = inputs / "dependency_provenance.json"
+    _copy_exclusive(binary, retained_binary, 0o555)
+    _copy_exclusive(provenance, retained_provenance, 0o444)
+    _fsync_directory(root)
+    return retained_binary, retained_provenance
+
+
 def _require_exact_fields(
     document: Mapping, expected: frozenset, artifact_name: str
 ) -> None:
@@ -333,6 +392,13 @@ def _validate_summary_metadata(row: Mapping, identity: Mapping) -> None:
         ):
             raise ArtifactError(
                 "valid retained rows must meet the configured repetition range"
+            )
+        if (
+            row["stop_reason"] == "maximum_repetitions"
+            and repetitions != identity["maximum_repetitions"]
+        ):
+            raise ArtifactError(
+                "maximum_repetitions rows must reach the configured maximum"
             )
 
 
@@ -816,6 +882,17 @@ def _validate_identity_document(
             raise ArtifactError("retained shards must align to nine-row groups")
         if not document["compiler_flags"]:
             raise ArtifactError("retained identity requires explicit compiler flags")
+        retained_paths = {
+            "benchmark_binary_path": str(
+                output_root / "inputs" / "benchmark_ndrop_integrators"
+            ),
+            "dependency_provenance_path": str(
+                output_root / "inputs" / "dependency_provenance.json"
+            ),
+        }
+        for name, expected in retained_paths.items():
+            if document[name] != expected:
+                raise ArtifactError("retained {} is not canonical".format(name))
 
 
 def _write_immutable_json(path: Path, document: Mapping) -> None:
@@ -873,7 +950,19 @@ def seal_identity_manifest(path: Path, document: Mapping) -> None:
         if not os.access(document["benchmark_binary_path"], os.X_OK):
             raise ArtifactError("retained benchmark binary is not executable")
     output_root = Path(document["output_root"])
-    if output_root.exists() and any(output_root.iterdir()):
+    existing_entries = set(output_root.iterdir()) if output_root.exists() else set()
+    if document["retained_contract"]:
+        inputs = output_root / "inputs"
+        expected_entries = {inputs}
+        expected_inputs = {
+            Path(document["benchmark_binary_path"]),
+            Path(document["dependency_provenance_path"]),
+        }
+        if existing_entries != expected_entries or not inputs.is_dir():
+            raise ArtifactError("retained run directory must contain only bound inputs")
+        if set(inputs.iterdir()) != expected_inputs:
+            raise ArtifactError("retained input directory differs from the identity")
+    elif existing_entries:
         raise ArtifactError("refusing to seal over a nonempty run directory")
     shard_root = Path(document["output_root"]) / "shards"
     shard_root.mkdir(parents=True, exist_ok=True)
@@ -1331,19 +1420,25 @@ def _create_identity_from_arguments(arguments: argparse.Namespace) -> None:
     commit, clean, detached = _git_identity(source_root)
     if not clean or not detached:
         raise ArtifactError("source must be clean and detached before sealing")
+    output_root = Path(arguments.output_root)
+    retained_binary, retained_provenance = prepare_retained_inputs(
+        output_root,
+        Path(arguments.binary),
+        Path(arguments.dependency_provenance),
+    )
     document = build_identity_document(
         run_id=arguments.run_id,
         source_root=source_root,
         source_commit=commit,
-        benchmark_binary=Path(arguments.binary),
-        dependency_provenance=Path(arguments.dependency_provenance),
+        benchmark_binary=retained_binary,
+        dependency_provenance=retained_provenance,
         compiler=arguments.compiler,
         compiler_flags=arguments.compiler_flag,
         machine=arguments.machine,
         platform=arguments.platform,
         execution_space=arguments.execution_space,
         validation_commands=arguments.validation_command,
-        output_root=Path(arguments.output_root),
+        output_root=output_root,
         scratch_root=Path(arguments.scratch_root),
         retained_contract=True,
     )

@@ -15,6 +15,7 @@ from ndrop_artifacts import (
     complete_shard,
     expected_retained_case,
     merge_completed_shards,
+    prepare_retained_inputs,
     seal_identity_manifest,
     validate_completed_shard,
     validate_csv_pair,
@@ -34,7 +35,7 @@ def _summary_row(case_id: int, run_id: str) -> dict:
     )
     row.update(
         {
-            "ci95_relative_half_width": "0.5",
+            "ci95_relative_half_width": "0.25",
             "instrumented_ci95_lower": "1",
             "instrumented_ci95_upper": "3",
             "instrumentation_overhead": "0",
@@ -112,16 +113,20 @@ class PairValidationTests(unittest.TestCase):
             binary = root / "benchmark"
             provenance = root / "dependencies.json"
             binary.write_bytes(b"binary")
+            binary.chmod(0o755)
             provenance.write_text("{}\n")
             commit = "a" * 40
+            retained_binary, retained_provenance = prepare_retained_inputs(
+                root / "run", binary, provenance
+            )
             document = build_identity_document(
                 run_id=(
                     "task5-remediated-20260825T120000Z-" + commit[:12]
                 ),
                 source_root=root / "source",
                 source_commit=commit,
-                benchmark_binary=binary,
-                dependency_provenance=provenance,
+                benchmark_binary=retained_binary,
+                dependency_provenance=retained_provenance,
                 compiler="clang test",
                 compiler_flags=("-O3", "-DNDEBUG"),
                 machine="test-machine",
@@ -138,6 +143,16 @@ class PairValidationTests(unittest.TestCase):
             self.assertEqual(
                 document["shards"][-1]["case_end_exclusive"], 24300
             )
+            self.assertEqual(
+                Path(document["benchmark_binary_path"]).parent,
+                root / "run" / "inputs",
+            )
+            self.assertEqual(
+                Path(document["dependency_provenance_path"]).parent,
+                root / "run" / "inputs",
+            )
+            with self.assertRaises(ArtifactError):
+                prepare_retained_inputs(root / "run", binary, provenance)
 
             with self.assertRaises(ArtifactError):
                 build_identity_document(

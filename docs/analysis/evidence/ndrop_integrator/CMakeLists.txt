@@ -100,42 +100,43 @@ add_test(
           --case-start 24291 --case-count 9 --warmups 0
           --min-repetitions 1 --max-repetitions 1
           --bootstrap-resamples 10 --progress-every 0)
-add_test(
-  NAME ndrop_benchmark_requires_run_id
-  COMMAND benchmark_ndrop_integrators --smoke --output
-          "${CMAKE_CURRENT_BINARY_DIR}/missing_run_id.csv"
-          --phase-samples-output
-          "${CMAKE_CURRENT_BINARY_DIR}/missing_run_id_phases.csv")
-set_tests_properties(
-  ndrop_benchmark_requires_run_id
-  PROPERTIES WILL_FAIL TRUE)
-add_test(
-  NAME ndrop_benchmark_requires_phase_output
-  COMMAND benchmark_ndrop_integrators --smoke --output
-          "${CMAKE_CURRENT_BINARY_DIR}/missing_phase_output.csv"
-          --run-id task5-remediated-missing-phase)
-set_tests_properties(
-  ndrop_benchmark_requires_phase_output
-  PROPERTIES WILL_FAIL TRUE)
-add_test(
-  NAME ndrop_benchmark_rejects_invalid_run_id
-  COMMAND benchmark_ndrop_integrators --smoke --output
-          "${CMAKE_CURRENT_BINARY_DIR}/invalid_run_id.csv"
-          --run-id invalid/run
-          --phase-samples-output
-          "${CMAKE_CURRENT_BINARY_DIR}/invalid_run_id_phases.csv")
-set_tests_properties(
+function(add_ndrop_expected_failure name expected)
+  string(JOIN "|" encoded_args ${ARGN})
+  add_test(
+    NAME ${name}
+    COMMAND "${CMAKE_COMMAND}"
+            "-DPROGRAM=$<TARGET_FILE:benchmark_ndrop_integrators>"
+            "-DEXPECTED=${expected}"
+            "-DENCODED_ARGS=${encoded_args}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/expect_failure.cmake")
+endfunction()
+
+add_ndrop_expected_failure(
+  ndrop_benchmark_requires_run_id "--run-id is required"
+  --smoke --output "${CMAKE_CURRENT_BINARY_DIR}/missing_run_id.csv"
+  --phase-samples-output
+  "${CMAKE_CURRENT_BINARY_DIR}/missing_run_id_phases.csv")
+add_ndrop_expected_failure(
+  ndrop_benchmark_requires_phase_output "--phase-samples-output is required"
+  --smoke --output "${CMAKE_CURRENT_BINARY_DIR}/missing_phase_output.csv"
+  --run-id task5-remediated-missing-phase)
+add_ndrop_expected_failure(
   ndrop_benchmark_rejects_invalid_run_id
-  PROPERTIES WILL_FAIL TRUE)
-add_test(
-  NAME ndrop_benchmark_phase_output_failure
-  COMMAND benchmark_ndrop_integrators --smoke --output
-          "${CMAKE_CURRENT_BINARY_DIR}/phase_output_failure.csv"
-          --run-id task5-remediated-phase-failure
-          --phase-samples-output "${CMAKE_CURRENT_BINARY_DIR}")
-set_tests_properties(
-  ndrop_benchmark_phase_output_failure
-  PROPERTIES WILL_FAIL TRUE)
+  "--run-id must match [A-Za-z0-9._-]{1,128}"
+  --smoke --output "${CMAKE_CURRENT_BINARY_DIR}/invalid_run_id.csv"
+  --run-id invalid/run --phase-samples-output
+  "${CMAKE_CURRENT_BINARY_DIR}/invalid_run_id_phases.csv")
+add_ndrop_expected_failure(
+  ndrop_benchmark_phase_output_failure "cannot open phase-samples output"
+  --smoke --output "${CMAKE_CURRENT_BINARY_DIR}/phase_output_failure.csv"
+  --run-id task5-remediated-phase-failure
+  --phase-samples-output "${CMAKE_CURRENT_BINARY_DIR}")
+add_ndrop_expected_failure(
+  ndrop_benchmark_rejects_aliased_outputs
+  "--output and --phase-samples-output must be different paths"
+  --smoke --output "${CMAKE_CURRENT_BINARY_DIR}/aliased_output.csv"
+  --run-id task5-remediated-alias --phase-samples-output
+  "${CMAKE_CURRENT_BINARY_DIR}/./aliased_output.csv")
 
 if(NDROP_BUILD_EXACT_ADAPTER)
   if(NOT EXISTS "${MAM4XX_SOURCE}/src/mam4xx/mam4_config.hpp.in")

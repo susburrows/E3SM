@@ -46,12 +46,17 @@ def _valid_row(**updates: object) -> dict:
         "median_seconds_per_column": "2",
         "ci95_lower": "1.5",
         "ci95_upper": "2.5",
+        "ci95_relative_half_width": "0.25",
         "clipping_count": "0",
         "material_negative_count": "0",
         "repetitions": "3",
         "raw_samples_seconds_per_column": "1;3;2",
         "instrumented_samples_seconds_per_column": "2;3;1",
         "instrumented_median_seconds_per_column": "2",
+        "instrumented_ci95_lower": "1",
+        "instrumented_ci95_upper": "3",
+        "instrumentation_overhead": "0",
+        "stop_reason": "maximum_repetitions",
         "setup_seconds_per_column": "0.1",
         "factorization_seconds_per_column": "",
         "solve_seconds_per_column": "",
@@ -86,6 +91,11 @@ def _valid_row(**updates: object) -> dict:
         for name in (
             "instrumented_samples_seconds_per_column",
             "instrumented_median_seconds_per_column",
+            "instrumented_ci95_lower",
+            "instrumented_ci95_upper",
+            "instrumentation_overhead",
+            "ci95_relative_half_width",
+            "stop_reason",
             "setup_seconds_per_column",
             "factorization_seconds_per_column",
             "solve_seconds_per_column",
@@ -96,6 +106,8 @@ def _valid_row(**updates: object) -> dict:
         ):
             if name not in updates:
                 row[name] = ""
+        if "stop_reason" not in updates:
+            row["stop_reason"] = "invalid"
     return row
 
 
@@ -153,7 +165,10 @@ def _constant_timing_row(case_id: int, error: float, seconds: float) -> dict:
         median_seconds_per_column=str(seconds),
         ci95_lower=str(seconds),
         ci95_upper=str(seconds),
+        ci95_relative_half_width="0",
         raw_samples_seconds_per_column="{0};{0};{0}".format(seconds),
+        instrumentation_overhead=str(2.0 / seconds - 1.0),
+        stop_reason="ci_target",
     )
 
 
@@ -166,6 +181,7 @@ def _timing_row(
     method: str = "imex",
     fe_nsubmix: int = 0,
 ) -> dict:
+    relative_half_width = (upper - lower) / 2.0 / median
     return _valid_row(
         case_id=str(case_id),
         screening_error=str(error),
@@ -174,11 +190,27 @@ def _timing_row(
         median_seconds_per_column=str(median),
         ci95_lower=str(lower),
         ci95_upper=str(upper),
+        ci95_relative_half_width=str(relative_half_width),
         raw_samples_seconds_per_column="{0};{0};{0}".format(median),
+        instrumentation_overhead=str(2.0 / median - 1.0),
+        stop_reason=(
+            "ci_target"
+            if relative_half_width < 0.05
+            else "maximum_repetitions"
+        ),
     )
 
 
 class TimingSummaryTests(unittest.TestCase):
+    def test_even_median_exactly_matches_cpp_overflow_safe_formula(self) -> None:
+        lower = 4.154765028703989e-220
+        upper = 3.588780579606149e-219
+        cpp_median = lower + (upper - lower) / 2.0
+
+        summary = summarize_timing((lower, upper), (cpp_median, cpp_median))
+
+        self.assertEqual(summary.median_seconds_per_column, cpp_median)
+
     def test_bootstrap_matches_hand_derived_splitmix_fixture(self) -> None:
         # With seed 0, the four 3-draw index sets modulo 3 are 101, 110,
         # 222, and 211.  Their medians are 2, 2, 3, and 2, so the exact
@@ -216,6 +248,38 @@ class TimingSummaryTests(unittest.TestCase):
 
 
 class RowIngestionTests(unittest.TestCase):
+    def test_all_timing_policy_fields_fail_closed(self) -> None:
+        malformed = (
+            _valid_row(ci95_relative_half_width="0.4"),
+            _valid_row(instrumented_ci95_lower="2.1"),
+            _valid_row(instrumented_ci95_upper="nan"),
+            _valid_row(instrumentation_overhead="0.1"),
+            _valid_row(stop_reason="unexpected"),
+            _valid_row(stop_reason="ci_target"),
+            _valid_row(
+                stop_reason="maximum_repetitions",
+                ci95_lower="1.92",
+                ci95_upper="2.08",
+                ci95_relative_half_width="0.04",
+            ),
+            _valid_row(
+                validation_ok="false",
+                eligible="false",
+                richardson_ok="false",
+                screening_error="",
+                median_seconds_per_column="",
+                ci95_lower="",
+                ci95_upper="",
+                repetitions="0",
+                raw_samples_seconds_per_column="",
+                instrumentation_overhead="0",
+            ),
+        )
+        for row in malformed:
+            with self.subTest(row=row):
+                with self.assertRaises(ScreeningInputError):
+                    ingest_rows([row])
+
     def test_v2_schema_width_and_phase_nullability_fail_closed(self) -> None:
         bad_rows = (
             _valid_row(artifact_schema="ndrop_summary_v1"),
@@ -586,7 +650,9 @@ class BreakEvenTests(unittest.TestCase):
                     median_seconds_per_column="2",
                     ci95_lower="2",
                     ci95_upper="2",
+                    ci95_relative_half_width="0",
                     raw_samples_seconds_per_column="2;2;2",
+                    stop_reason="ci_target",
                 ),
             ]
         )

@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from enum import Enum
 import math
 import re
-from statistics import median
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 
@@ -190,12 +189,17 @@ _REQUIRED_ROW_FIELDS = frozenset(
         "median_seconds_per_column",
         "ci95_lower",
         "ci95_upper",
+        "ci95_relative_half_width",
         "clipping_count",
         "material_negative_count",
         "repetitions",
         "raw_samples_seconds_per_column",
         "instrumented_samples_seconds_per_column",
         "instrumented_median_seconds_per_column",
+        "instrumented_ci95_lower",
+        "instrumented_ci95_upper",
+        "instrumentation_overhead",
+        "stop_reason",
         "setup_seconds_per_column",
         "factorization_seconds_per_column",
         "solve_seconds_per_column",
@@ -378,6 +382,30 @@ def _raw_timing_samples(value: object) -> Tuple[float, ...]:
     )
 
 
+def _cpp_sample_median(samples: Sequence[float]) -> float:
+    """Match ``sample_median`` in ``ndrop_benchmark.cpp`` exactly."""
+
+    ordered = sorted(samples)
+    middle = len(ordered) // 2
+    upper = ordered[middle]
+    if len(ordered) % 2:
+        return upper
+    lower = ordered[middle - 1]
+    return lower + (upper - lower) / 2.0
+
+
+def _finite_number(value: object, name: str) -> float:
+    if isinstance(value, bool):
+        raise ScreeningInputError("{} must be finite".format(name))
+    try:
+        converted = float(value)
+    except (TypeError, ValueError):
+        raise ScreeningInputError("{} must be finite".format(name))
+    if not math.isfinite(converted):
+        raise ScreeningInputError("{} must be finite".format(name))
+    return converted
+
+
 def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
     """Validate decoded benchmark rows and account for excluded records.
 
@@ -488,7 +516,7 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
                 raise ScreeningInputError(
                     "reported timing median must equal the exact raw sample median"
                 )
-            instrumented_median = float(median(instrumented_samples))
+            instrumented_median = _cpp_sample_median(instrumented_samples)
             if _finite_nonnegative(
                 row["instrumented_median_seconds_per_column"],
                 "instrumented_median_seconds_per_column",
@@ -496,17 +524,75 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
                 raise ScreeningInputError(
                     "reported instrumented median must equal its raw sample median"
                 )
+            reported_relative_half_width = _finite_nonnegative(
+                row["ci95_relative_half_width"],
+                "ci95_relative_half_width",
+            )
+            if reported_relative_half_width != timing.ci95_relative_half_width:
+                raise ScreeningInputError(
+                    "reported relative half-width must match the primary CI"
+                )
+            instrumented_lower = _finite_nonnegative(
+                row["instrumented_ci95_lower"],
+                "instrumented_ci95_lower",
+            )
+            instrumented_upper = _finite_nonnegative(
+                row["instrumented_ci95_upper"],
+                "instrumented_ci95_upper",
+            )
+            if not (
+                instrumented_lower
+                <= instrumented_median
+                <= instrumented_upper
+            ):
+                raise ScreeningInputError(
+                    "instrumented CI must contain its raw sample median"
+                )
+            overhead = _finite_number(
+                row["instrumentation_overhead"], "instrumentation_overhead"
+            )
+            expected_overhead = (
+                instrumented_median / timing.median_seconds_per_column - 1.0
+                if timing.median_seconds_per_column > 0.0
+                else 0.0
+            )
+            if overhead != expected_overhead:
+                raise ScreeningInputError(
+                    "instrumentation overhead must match the two medians"
+                )
+            stop_reason = row["stop_reason"]
+            if stop_reason not in {"ci_target", "maximum_repetitions"}:
+                raise ScreeningInputError("valid row has an invalid stop_reason")
+            if stop_reason == "ci_target" and reported_relative_half_width >= 0.05:
+                raise ScreeningInputError(
+                    "ci_target requires relative half-width below 0.05"
+                )
+            if (
+                stop_reason == "maximum_repetitions"
+                and reported_relative_half_width < 0.05
+            ):
+                raise ScreeningInputError(
+                    "maximum_repetitions is inconsistent with a met CI target"
+                )
         else:
             for name in (
                 "median_seconds_per_column",
                 "ci95_lower",
                 "ci95_upper",
+                "ci95_relative_half_width",
                 "instrumented_median_seconds_per_column",
+                "instrumented_ci95_lower",
+                "instrumented_ci95_upper",
+                "instrumentation_overhead",
             ):
                 if not _blank(row[name]):
                     raise ScreeningInputError(
                         "{} must be blank for invalid rows".format(name)
                     )
+            if row["stop_reason"] != "invalid":
+                raise ScreeningInputError(
+                    "invalid row must have stop_reason=invalid"
+                )
         if not validation_ok:
             exclusions.append(
                 Exclusion(
@@ -684,7 +770,9 @@ def ingest_paired_artifacts(
             values = tuple(
                 _finite_nonnegative(row[name], name) for row in ordered
             )
-            if _finite_nonnegative(summary[name], name) != float(median(values)):
+            if _finite_nonnegative(summary[name], name) != _cpp_sample_median(
+                values
+            ):
                 raise ScreeningInputError(
                     "summary phase median cannot be reconstructed exactly"
                 )
@@ -977,7 +1065,7 @@ def summarize_timing(
         raise ScreeningInputError("timing CI must contain exactly two bounds")
     lower = _finite_nonnegative(ci95[0], "timing CI lower")
     upper = _finite_nonnegative(ci95[1], "timing CI upper")
-    exact_median = float(median(samples))
+    exact_median = _cpp_sample_median(samples)
     if lower > exact_median or exact_median > upper:
         raise ScreeningInputError("timing CI must contain the sample median")
     return TimingEstimate(exact_median, lower, upper)
@@ -1024,14 +1112,14 @@ def bootstrap_median_interval(
             value = ((value ^ (value >> 27)) * 0x94D049BB133111EB) & mask
             value = (value ^ (value >> 31)) & mask
             replicate.append(samples[value % len(samples)])
-        replicate_medians.append(float(median(replicate)))
+        replicate_medians.append(_cpp_sample_median(replicate))
 
     replicate_medians.sort()
     last_index = len(replicate_medians) - 1
     lower_index = math.floor(0.025 * last_index)
     upper_index = math.ceil(0.975 * last_index)
     return TimingEstimate(
-        float(median(samples)),
+        _cpp_sample_median(samples),
         replicate_medians[lower_index],
         replicate_medians[upper_index],
     )
