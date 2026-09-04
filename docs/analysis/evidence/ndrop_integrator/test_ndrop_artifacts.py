@@ -59,7 +59,6 @@ def _summary_row(case_id: int, run_id: str) -> dict:
     )
     row.update(
         {
-            "ci95_relative_half_width": "0.25",
             "instrumented_ci95_lower": "1",
             "instrumented_ci95_upper": "3",
             "instrumentation_overhead": "0",
@@ -75,9 +74,15 @@ def _summary_row(case_id: int, run_id: str) -> dict:
             "kokkos_execution_space": "Serial",
             "hardware_threads": "8",
             "warmups": "10",
-            "minimum_repetitions": "30",
-            "maximum_repetitions": "100",
-            "bootstrap_resamples": "10000",
+            "minimum_repetitions": "3",
+            "maximum_repetitions": "3",
+            "bootstrap_resamples": "4",
+            "raw_samples_seconds_per_column": "2;2;2",
+            "median_seconds_per_column": "2",
+            "ci95_lower": "2",
+            "ci95_upper": "2",
+            "ci95_relative_half_width": "0",
+            "stop_reason": "ci_target",
         }
     )
     return row
@@ -267,6 +272,9 @@ class TransactionTests(unittest.TestCase):
             output_root=self.run_root,
             total_case_count=6,
             shard_case_count=3,
+            minimum_repetitions=3,
+            maximum_repetitions=3,
+            bootstrap_resamples=4,
             retained_contract=False,
         )
         seal_identity_manifest(self.identity_path, document)

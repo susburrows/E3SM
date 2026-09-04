@@ -44,19 +44,22 @@ def _valid_row(**updates: object) -> dict:
         "richardson_ok": "true",
         "screening_error": "0.003",
         "median_seconds_per_column": "2",
-        "ci95_lower": "1.5",
-        "ci95_upper": "2.5",
-        "ci95_relative_half_width": "0.25",
+        "ci95_lower": "2",
+        "ci95_upper": "2",
+        "ci95_relative_half_width": "0",
         "clipping_count": "0",
         "material_negative_count": "0",
         "repetitions": "3",
-        "raw_samples_seconds_per_column": "1;3;2",
+        "raw_samples_seconds_per_column": "2;2;2",
         "instrumented_samples_seconds_per_column": "2;3;1",
         "instrumented_median_seconds_per_column": "2",
         "instrumented_ci95_lower": "1",
         "instrumented_ci95_upper": "3",
         "instrumentation_overhead": "0",
-        "stop_reason": "maximum_repetitions",
+        "stop_reason": "ci_target",
+        "minimum_repetitions": "3",
+        "maximum_repetitions": "3",
+        "bootstrap_resamples": "4",
         "setup_seconds_per_column": "0.1",
         "factorization_seconds_per_column": "",
         "solve_seconds_per_column": "",
@@ -191,13 +194,47 @@ def _timing_row(
         ci95_lower=str(lower),
         ci95_upper=str(upper),
         ci95_relative_half_width=str(relative_half_width),
-        raw_samples_seconds_per_column="{0};{0};{0}".format(median),
+        raw_samples_seconds_per_column="{};{};{}".format(lower, median, upper),
+        bootstrap_resamples="100",
         instrumentation_overhead=str(2.0 / median - 1.0),
         stop_reason=(
             "ci_target"
             if relative_half_width < 0.05
             else "maximum_repetitions"
         ),
+    )
+
+
+def _timing_policy_row(
+    samples: tuple[float, ...],
+    *,
+    median: float,
+    lower: float,
+    upper: float,
+    relative_half_width: float,
+    stop_reason: str,
+    minimum_repetitions: int,
+    maximum_repetitions: int,
+    resamples: int = 4,
+) -> dict:
+    joined = ";".join(str(value) for value in samples)
+    return _valid_row(
+        case_id=str(0x4E44524F),
+        repetitions=str(len(samples)),
+        raw_samples_seconds_per_column=joined,
+        instrumented_samples_seconds_per_column=joined,
+        median_seconds_per_column=str(median),
+        ci95_lower=str(lower),
+        ci95_upper=str(upper),
+        ci95_relative_half_width=str(relative_half_width),
+        instrumented_median_seconds_per_column=str(median),
+        instrumented_ci95_lower=str(lower),
+        instrumented_ci95_upper=str(upper),
+        instrumentation_overhead="0",
+        stop_reason=stop_reason,
+        minimum_repetitions=str(minimum_repetitions),
+        maximum_repetitions=str(maximum_repetitions),
+        bootstrap_resamples=str(resamples),
     )
 
 
@@ -212,10 +249,13 @@ class TimingSummaryTests(unittest.TestCase):
         self.assertEqual(summary.median_seconds_per_column, cpp_median)
 
     def test_bootstrap_matches_hand_derived_splitmix_fixture(self) -> None:
+        case_id = 0x4E44524F
         # With seed 0, the four 3-draw index sets modulo 3 are 101, 110,
         # 222, and 211.  Their medians are 2, 2, 3, and 2, so the exact
         # percentile bounds are [2, 3] and the relative half-width is 0.25.
-        interval = bootstrap_median_interval([1.0, 2.0, 3.0], 4, 0)
+        interval = bootstrap_median_interval(
+            [1.0, 2.0, 3.0], 4, 0x4E44524F ^ case_id
+        )
 
         self.assertEqual(interval.median_seconds_per_column, 2.0)
         self.assertEqual(interval.ci95_lower_seconds_per_column, 2.0)
@@ -248,6 +288,88 @@ class TimingSummaryTests(unittest.TestCase):
 
 
 class RowIngestionTests(unittest.TestCase):
+    def test_reconstructs_primary_bootstrap_and_first_ci_target_prefix(self) -> None:
+        # Seed 0 gives prefix-3 draws 101, 110, 222, 211: CI [1, 2].
+        # Prefix-4 draws 3030, 3210, 3212, 3313: every median is 1.
+        row = _timing_policy_row(
+            (1.0, 2.0, 1.0, 1.0),
+            median=1.0,
+            lower=1.0,
+            upper=1.0,
+            relative_half_width=0.0,
+            stop_reason="ci_target",
+            minimum_repetitions=3,
+            maximum_repetitions=5,
+        )
+
+        point = ingest_rows([row]).points[0]
+
+        self.assertEqual(point.timing, TimingEstimate(1.0, 1.0, 1.0))
+
+    def test_maximum_repetitions_replays_every_eligible_prefix(self) -> None:
+        row = _timing_policy_row(
+            (1.0, 2.0, 3.0, 2.0, 3.0),
+            median=2.0,
+            lower=1.0,
+            upper=3.0,
+            relative_half_width=0.5,
+            stop_reason="maximum_repetitions",
+            minimum_repetitions=3,
+            maximum_repetitions=5,
+        )
+
+        point = ingest_rows([row]).points[0]
+
+        self.assertEqual(point.timing, TimingEstimate(2.0, 1.0, 3.0))
+
+    def test_stale_primary_timing_policy_fields_fail_closed(self) -> None:
+        base = _timing_policy_row(
+            (1.0, 2.0, 3.0, 2.0, 3.0),
+            median=2.0,
+            lower=1.0,
+            upper=3.0,
+            relative_half_width=0.5,
+            stop_reason="maximum_repetitions",
+            minimum_repetitions=3,
+            maximum_repetitions=5,
+        )
+        mutations = (
+            {"median_seconds_per_column": "2.1"},
+            {
+                "ci95_lower": "1.5",
+                "ci95_upper": "2.5",
+                "ci95_relative_half_width": "0.25",
+            },
+            {"ci95_relative_half_width": "0.4"},
+            {"repetitions": "4"},
+            {"bootstrap_resamples": "1"},
+            {"minimum_repetitions": "6"},
+            {"maximum_repetitions": "6"},
+            {"stop_reason": "unexpected"},
+        )
+        for mutation in mutations:
+            row = dict(base)
+            row.update(mutation)
+            with self.subTest(mutation=mutation):
+                with self.assertRaises(ScreeningInputError):
+                    ingest_rows([row])
+
+    def test_stopping_after_an_earlier_qualifying_prefix_fails_closed(self) -> None:
+        # Prefix 4 has CI [1, 1], so the producer cannot collect sample 5.
+        row = _timing_policy_row(
+            (1.0, 2.0, 1.0, 1.0, 1.0),
+            median=1.0,
+            lower=1.0,
+            upper=2.0,
+            relative_half_width=0.5,
+            stop_reason="maximum_repetitions",
+            minimum_repetitions=3,
+            maximum_repetitions=5,
+        )
+
+        with self.assertRaises(ScreeningInputError):
+            ingest_rows([row])
+
     def test_all_timing_policy_fields_fail_closed(self) -> None:
         malformed = (
             _valid_row(ci95_relative_half_width="0.4"),
@@ -255,7 +377,7 @@ class RowIngestionTests(unittest.TestCase):
             _valid_row(instrumented_ci95_upper="nan"),
             _valid_row(instrumentation_overhead="0.1"),
             _valid_row(stop_reason="unexpected"),
-            _valid_row(stop_reason="ci_target"),
+            _valid_row(stop_reason="maximum_repetitions"),
             _valid_row(
                 stop_reason="maximum_repetitions",
                 ci95_lower="1.92",
@@ -388,6 +510,23 @@ class RowIngestionTests(unittest.TestCase):
             dataset.exclusions[0].reason, ExclusionReason.VALIDATION_FAILURE
         )
 
+    def test_invalid_row_still_requires_valid_repetition_policy(self) -> None:
+        row = _valid_row(
+            validation_ok="false",
+            eligible="false",
+            richardson_ok="false",
+            screening_error="",
+            median_seconds_per_column="",
+            ci95_lower="",
+            ci95_upper="",
+            repetitions="0",
+            raw_samples_seconds_per_column="",
+            bootstrap_resamples="not-an-integer",
+        )
+
+        with self.assertRaises(ScreeningInputError):
+            ingest_rows([row])
+
     def test_each_analysis_gate_has_a_specific_exclusion(self) -> None:
         # Catches admitting unsafe points or hiding their specific gate failure.
         rows = [
@@ -418,7 +557,7 @@ class RowIngestionTests(unittest.TestCase):
         )
 
     def test_included_row_uses_exact_raw_median_and_supplied_ci(self) -> None:
-        # Catches trusting an approximate statistic or discarding bootstrap bounds.
+        # Catches trusting a stale statistic instead of reconstructing the bootstrap.
         dataset = ingest_rows([_valid_row()])
 
         self.assertEqual(dataset.exclusions, ())
@@ -431,7 +570,7 @@ class RowIngestionTests(unittest.TestCase):
                 point.timing.ci95_lower_seconds_per_column,
                 point.timing.ci95_upper_seconds_per_column,
             ),
-            (1.5, 2.5),
+            (2.0, 2.0),
         )
 
     def test_reported_count_and_median_must_match_raw_samples(self) -> None:

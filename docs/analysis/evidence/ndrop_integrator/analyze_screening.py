@@ -193,6 +193,9 @@ _REQUIRED_ROW_FIELDS = frozenset(
         "clipping_count",
         "material_negative_count",
         "repetitions",
+        "minimum_repetitions",
+        "maximum_repetitions",
+        "bootstrap_resamples",
         "raw_samples_seconds_per_column",
         "instrumented_samples_seconds_per_column",
         "instrumented_median_seconds_per_column",
@@ -406,6 +409,71 @@ def _finite_number(value: object, name: str) -> float:
     return converted
 
 
+def _reconstruct_primary_timing(
+    row: Mapping,
+    case_id: int,
+    raw_samples: Tuple[float, ...],
+    repetitions: int,
+    minimum: int,
+    maximum: int,
+    resamples: int,
+) -> TimingEstimate:
+    """Replay the producer's primary bootstrap and stopping policy exactly."""
+
+    if repetitions < minimum or repetitions > maximum:
+        raise ScreeningInputError(
+            "valid repetition count must be within the configured policy"
+        )
+    stop_reason = row["stop_reason"]
+    if stop_reason not in {"ci_target", "maximum_repetitions"}:
+        raise ScreeningInputError("valid row has an invalid stop_reason")
+
+    seed = 0x4E44524F ^ case_id
+    intervals = tuple(
+        bootstrap_median_interval(raw_samples[:count], resamples, seed)
+        for count in range(minimum, repetitions + 1)
+    )
+    first_target = next(
+        (
+            minimum + offset
+            for offset, interval in enumerate(intervals)
+            if interval.ci95_relative_half_width < 0.05
+        ),
+        None,
+    )
+    if first_target is not None:
+        if stop_reason != "ci_target" or first_target != repetitions:
+            raise ScreeningInputError(
+                "timing samples continue after the first eligible CI target"
+            )
+    elif stop_reason != "maximum_repetitions" or repetitions != maximum:
+        raise ScreeningInputError(
+            "maximum_repetitions must reach the configured maximum without "
+            "meeting the CI target"
+        )
+
+    reconstructed = intervals[-1]
+    reported = TimingEstimate(
+        _finite_nonnegative(
+            row["median_seconds_per_column"], "median_seconds_per_column"
+        ),
+        _finite_nonnegative(row["ci95_lower"], "ci95_lower"),
+        _finite_nonnegative(row["ci95_upper"], "ci95_upper"),
+    )
+    reported_relative_half_width = _finite_nonnegative(
+        row["ci95_relative_half_width"], "ci95_relative_half_width"
+    )
+    if (
+        reported != reconstructed
+        or reported_relative_half_width
+        != reconstructed.ci95_relative_half_width
+    ):
+        raise ScreeningInputError(
+            "reported primary timing must equal its deterministic bootstrap"
+        )
+    return reconstructed
+
+
 def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
     """Validate decoded benchmark rows and account for excluded records.
 
@@ -470,6 +538,19 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             row["instrumented_samples_seconds_per_column"]
         )
         repetitions = _integer(row["repetitions"], "repetitions")
+        minimum_repetitions = _integer(
+            row["minimum_repetitions"], "minimum_repetitions", 1
+        )
+        maximum_repetitions = _integer(
+            row["maximum_repetitions"], "maximum_repetitions", 1
+        )
+        bootstrap_resamples = _integer(
+            row["bootstrap_resamples"], "bootstrap_resamples", 1
+        )
+        if maximum_repetitions < minimum_repetitions:
+            raise ScreeningInputError(
+                "maximum_repetitions must not be less than minimum_repetitions"
+            )
         if repetitions != len(raw_samples) or repetitions != len(
             instrumented_samples
         ):
@@ -501,21 +582,15 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             fe_nsubmix = None
         timing = None
         if repetitions > 0:
-            timing = summarize_timing(
+            timing = _reconstruct_primary_timing(
+                row,
+                case_id,
                 raw_samples,
-                (
-                    row["ci95_lower"],
-                    row["ci95_upper"],
-                ),
+                repetitions,
+                minimum_repetitions,
+                maximum_repetitions,
+                bootstrap_resamples,
             )
-            reported_median = _finite_nonnegative(
-                row["median_seconds_per_column"],
-                "median_seconds_per_column",
-            )
-            if reported_median != timing.median_seconds_per_column:
-                raise ScreeningInputError(
-                    "reported timing median must equal the exact raw sample median"
-                )
             instrumented_median = _cpp_sample_median(instrumented_samples)
             if _finite_nonnegative(
                 row["instrumented_median_seconds_per_column"],
@@ -523,14 +598,6 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             ) != instrumented_median:
                 raise ScreeningInputError(
                     "reported instrumented median must equal its raw sample median"
-                )
-            reported_relative_half_width = _finite_nonnegative(
-                row["ci95_relative_half_width"],
-                "ci95_relative_half_width",
-            )
-            if reported_relative_half_width != timing.ci95_relative_half_width:
-                raise ScreeningInputError(
-                    "reported relative half-width must match the primary CI"
                 )
             instrumented_lower = _finite_nonnegative(
                 row["instrumented_ci95_lower"],
@@ -559,20 +626,6 @@ def ingest_rows(rows: Iterable[Mapping]) -> AnalysisDataset:
             if overhead != expected_overhead:
                 raise ScreeningInputError(
                     "instrumentation overhead must match the two medians"
-                )
-            stop_reason = row["stop_reason"]
-            if stop_reason not in {"ci_target", "maximum_repetitions"}:
-                raise ScreeningInputError("valid row has an invalid stop_reason")
-            if stop_reason == "ci_target" and reported_relative_half_width >= 0.05:
-                raise ScreeningInputError(
-                    "ci_target requires relative half-width below 0.05"
-                )
-            if (
-                stop_reason == "maximum_repetitions"
-                and reported_relative_half_width < 0.05
-            ):
-                raise ScreeningInputError(
-                    "maximum_repetitions is inconsistent with a met CI target"
                 )
         else:
             for name in (
