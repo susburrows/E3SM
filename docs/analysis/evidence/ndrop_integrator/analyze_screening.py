@@ -143,6 +143,36 @@ class TargetSelection:
     point: Optional[ScreeningPoint]
 
 
+class MatchedErrorStatus(str, Enum):
+    """Closed outcomes for a fail-closed matched-error comparison."""
+
+    DETERMINATE = "determinate"
+    INDETERMINATE = "indeterminate"
+    UNAVAILABLE = "unavailable"
+    UNSUPPORTED_COST_BASIS = "unsupported_cost_basis"
+
+
+@dataclass(frozen=True)
+class MatchedErrorComparison:
+    """Fail-closed matched-error comparison status and measured winner.
+
+    Only a determinate result has a winner.
+    """
+
+    status: MatchedErrorStatus
+    winner_axis: Optional[Tuple[str, Optional[int]]]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.status, MatchedErrorStatus):
+            raise ScreeningInputError("matched-error status must be closed")
+        if (self.status is MatchedErrorStatus.DETERMINATE) != (
+            self.winner_axis is not None
+        ):
+            raise ScreeningInputError(
+                "only a determinate matched-error result may have a winner"
+            )
+
+
 class BreakEvenStatus(str, Enum):
     """Availability of an FE-submix break-even estimate."""
 
@@ -954,6 +984,110 @@ def select_measured_targets(
                 )
             )
     return tuple(selections)
+
+
+def compare_matched_error_cost(
+    dataset: AnalysisDataset,
+    group: GroupKey,
+    first_axis: Tuple[str, Optional[int]],
+    second_axis: Tuple[str, Optional[int]],
+    target_error: float,
+) -> MatchedErrorComparison:
+    """Compare direct same-timestep measurements at one supported error.
+
+    Axis values are ``(method, fe_nsubmix)``.  Error interpolation would mix
+    timestep costs that this benchmark did not measure on a common cost basis,
+    so bracketed targets are explicitly unsupported rather than interpolated.
+    """
+
+    if not isinstance(dataset, AnalysisDataset):
+        raise ScreeningInputError(
+            "matched-error comparison requires a validated AnalysisDataset"
+        )
+    if not isinstance(group, GroupKey):
+        raise ScreeningInputError("matched-error comparison requires a GroupKey")
+
+    def checked_axis(
+        value: object, name: str
+    ) -> Tuple[str, Optional[int]]:
+        if not isinstance(value, tuple) or len(value) != 2:
+            raise ScreeningInputError(
+                "{} must be a (method, fe_nsubmix) axis".format(name)
+            )
+        method, fe_nsubmix = value
+        if method not in {"forward_euler", "imex", "backward_euler"}:
+            raise ScreeningInputError("{} has an unsupported method".format(name))
+        if method == "forward_euler":
+            if (
+                isinstance(fe_nsubmix, bool)
+                or not isinstance(fe_nsubmix, int)
+                or fe_nsubmix < 1
+            ):
+                raise ScreeningInputError(
+                    "{} requires a positive FE submix count".format(name)
+                )
+        elif fe_nsubmix is not None:
+            raise ScreeningInputError(
+                "{} requires no FE submix count".format(name)
+            )
+        return method, fe_nsubmix
+
+    axes = (
+        checked_axis(first_axis, "first_axis"),
+        checked_axis(second_axis, "second_axis"),
+    )
+    target = _finite_nonnegative(target_error, "target error")
+    if target == 0.0:
+        raise ScreeningInputError("target error must be positive")
+
+    direct_points = []
+    needs_cross_timestep_cost = False
+    for method, fe_nsubmix in axes:
+        points = tuple(
+            point
+            for point in dataset.points
+            if point.group == group
+            and point.method == method
+            and point.fe_nsubmix == fe_nsubmix
+        )
+        if not points:
+            return MatchedErrorComparison(MatchedErrorStatus.UNAVAILABLE, None)
+        errors = tuple(point.screening_error for point in points)
+        if target < min(errors) or target > max(errors):
+            return MatchedErrorComparison(MatchedErrorStatus.UNAVAILABLE, None)
+        exact = tuple(point for point in points if point.screening_error == target)
+        if len(exact) != 1:
+            needs_cross_timestep_cost = True
+        else:
+            direct_points.append(exact[0])
+
+    if needs_cross_timestep_cost:
+        return MatchedErrorComparison(
+            MatchedErrorStatus.UNSUPPORTED_COST_BASIS, None
+        )
+
+    first_point, second_point = direct_points
+    if first_point.dt_seconds != second_point.dt_seconds:
+        return MatchedErrorComparison(
+            MatchedErrorStatus.UNSUPPORTED_COST_BASIS, None
+        )
+
+    first_timing = first_point.timing
+    second_timing = second_point.timing
+    if not (
+        first_timing.ci95_upper_seconds_per_column
+        < second_timing.ci95_lower_seconds_per_column
+        or second_timing.ci95_upper_seconds_per_column
+        < first_timing.ci95_lower_seconds_per_column
+    ):
+        return MatchedErrorComparison(MatchedErrorStatus.INDETERMINATE, None)
+    winner = (
+        axes[0]
+        if first_timing.median_seconds_per_column
+        < second_timing.median_seconds_per_column
+        else axes[1]
+    )
+    return MatchedErrorComparison(MatchedErrorStatus.DETERMINATE, winner)
 
 
 def _first_adjacent_crossing(

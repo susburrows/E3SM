@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import unittest
 
+import analyze_screening as screening
 from analyze_screening import (
     BreakEvenStatus,
     ExclusionReason,
@@ -183,10 +184,12 @@ def _timing_row(
     upper: float,
     method: str = "imex",
     fe_nsubmix: int = 0,
+    dt: float = 50.0,
 ) -> dict:
     relative_half_width = (upper - lower) / 2.0 / median
     return _valid_row(
         case_id=str(case_id),
+        dt=str(dt),
         screening_error=str(error),
         method=method,
         forced_fe_substeps=str(fe_nsubmix),
@@ -695,6 +698,222 @@ class TargetSelectionTests(unittest.TestCase):
             tuple(item.point.case_id for item in selections),
             (1, 2),
         )
+
+
+class MatchedErrorComparisonTests(unittest.TestCase):
+    def _compare(
+        self,
+        dataset,
+        first_axis,
+        second_axis,
+        target_error=0.005,
+    ):
+        comparison = getattr(screening, "compare_matched_error_cost", None)
+        if comparison is None:
+            self.fail("matched-error comparison status path is missing")
+        return comparison(
+            dataset,
+            dataset.points[0].group,
+            first_axis,
+            second_axis,
+            target_error,
+        )
+
+    def test_status_contract_is_closed_and_constructor_is_fail_closed(self) -> None:
+        status_type = getattr(screening, "MatchedErrorStatus", None)
+        if status_type is None:
+            self.fail("matched-error statuses are not a closed enum")
+        self.assertEqual(
+            {status.value for status in status_type},
+            {
+                "determinate",
+                "indeterminate",
+                "unavailable",
+                "unsupported_cost_basis",
+            },
+        )
+        with self.assertRaises(ScreeningInputError):
+            screening.MatchedErrorComparison("unknown", None)
+        with self.assertRaises(ScreeningInputError):
+            screening.MatchedErrorComparison(
+                status_type.UNSUPPORTED_COST_BASIS, ("imex", None)
+            )
+        with self.assertRaises(ScreeningInputError):
+            screening.MatchedErrorComparison(status_type.DETERMINATE, None)
+
+    def test_same_timestep_nonoverlapping_primary_timing_is_determinate(self) -> None:
+        dataset = ingest_rows(
+            [
+                _timing_row(1, 0.005, 2.0, 1.8, 2.2, method="imex"),
+                _timing_row(
+                    2,
+                    0.005,
+                    3.0,
+                    2.7,
+                    3.3,
+                    method="backward_euler",
+                ),
+            ]
+        )
+
+        result = self._compare(
+            dataset, ("imex", None), ("backward_euler", None)
+        )
+
+        self.assertEqual(result.status.value, "determinate")
+        self.assertEqual(result.winner_axis, ("imex", None))
+
+    def test_tie_and_overlapping_uncertainty_are_indeterminate(self) -> None:
+        fixtures = (
+            (
+                _timing_row(1, 0.005, 2.0, 2.0, 2.0, method="imex"),
+                _timing_row(
+                    2,
+                    0.005,
+                    2.0,
+                    2.0,
+                    2.0,
+                    method="backward_euler",
+                ),
+            ),
+            (
+                _timing_row(3, 0.005, 2.0, 1.8, 2.2, method="imex"),
+                _timing_row(
+                    4,
+                    0.005,
+                    2.3,
+                    2.1,
+                    2.5,
+                    method="backward_euler",
+                ),
+            ),
+        )
+        for rows in fixtures:
+            with self.subTest(rows=rows):
+                result = self._compare(
+                    ingest_rows(rows),
+                    ("imex", None),
+                    ("backward_euler", None),
+                )
+                self.assertEqual(result.status.value, "indeterminate")
+                self.assertIsNone(result.winner_axis)
+
+    def test_unbracketed_or_missing_common_support_is_unavailable(self) -> None:
+        dataset = ingest_rows(
+            [
+                _timing_row(1, 0.001, 2.0, 2.0, 2.0, method="imex"),
+                _timing_row(
+                    2,
+                    0.003,
+                    3.0,
+                    3.0,
+                    3.0,
+                    method="backward_euler",
+                ),
+            ]
+        )
+
+        result = self._compare(
+            dataset,
+            ("imex", None),
+            ("backward_euler", None),
+            target_error=0.005,
+        )
+
+        self.assertEqual(result.status.value, "unavailable")
+        self.assertIsNone(result.winner_axis)
+
+    def test_bracketed_or_direct_cross_timestep_cost_is_unsupported(self) -> None:
+        bracketed = ingest_rows(
+            [
+                _timing_row(
+                    1, 0.001, 4.0, 4.0, 4.0, method="imex", dt=25.0
+                ),
+                _timing_row(
+                    2, 0.01, 1.0, 1.0, 1.0, method="imex", dt=100.0
+                ),
+                _timing_row(
+                    3,
+                    0.001,
+                    6.0,
+                    6.0,
+                    6.0,
+                    method="backward_euler",
+                    dt=25.0,
+                ),
+                _timing_row(
+                    4,
+                    0.01,
+                    2.0,
+                    2.0,
+                    2.0,
+                    method="backward_euler",
+                    dt=100.0,
+                ),
+            ]
+        )
+        direct = ingest_rows(
+            [
+                _timing_row(
+                    5, 0.005, 2.0, 2.0, 2.0, method="imex", dt=50.0
+                ),
+                _timing_row(
+                    6,
+                    0.005,
+                    3.0,
+                    3.0,
+                    3.0,
+                    method="backward_euler",
+                    dt=100.0,
+                ),
+            ]
+        )
+
+        for dataset in (bracketed, direct):
+            with self.subTest(dataset=dataset):
+                result = self._compare(
+                    dataset,
+                    ("imex", None),
+                    ("backward_euler", None),
+                )
+                self.assertEqual(
+                    result.status.value, "unsupported_cost_basis"
+                )
+                self.assertIsNone(result.winner_axis)
+                self.assertEqual(
+                    set(vars(result)), {"status", "winner_axis"}
+                )
+
+    def test_phase_diagnostics_cannot_enter_comparative_timing(self) -> None:
+        row = _valid_row()
+        diagnostics = ingest_paired_artifacts(
+            [row], _phase_rows(row)
+        ).phase_diagnostics[0]
+        dataset = ingest_rows(
+            [
+                _timing_row(1, 0.005, 2.0, 2.0, 2.0, method="imex"),
+                _timing_row(
+                    2,
+                    0.005,
+                    3.0,
+                    3.0,
+                    3.0,
+                    method="backward_euler",
+                ),
+            ]
+        )
+        comparison = getattr(screening, "compare_matched_error_cost", None)
+        if comparison is None:
+            self.fail("matched-error comparison status path is missing")
+
+        with self.assertRaises(ScreeningInputError):
+            comparison(
+                diagnostics,
+                dataset.points[0].group,
+                ("imex", None),
+                ("backward_euler", None),
+                0.005,
+            )
 
 
 class BreakEvenTests(unittest.TestCase):
