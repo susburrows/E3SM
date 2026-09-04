@@ -6,7 +6,9 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
+from analyze_screening import PairedArtifacts
 from ndrop_artifacts import (
     ArtifactError,
     PHASE_COLUMNS,
@@ -14,6 +16,7 @@ from ndrop_artifacts import (
     build_identity_document,
     complete_shard,
     expected_retained_case,
+    load_validated_analysis_input,
     merge_completed_shards,
     prepare_retained_inputs,
     seal_identity_manifest,
@@ -22,6 +25,27 @@ from ndrop_artifacts import (
     validate_final_run,
 )
 from test_analyze_screening import _phase_rows, _valid_row
+
+
+class _CsvOpenMonitor:
+    def __init__(self) -> None:
+        self.paths = []
+        self._original_open = Path.open
+        self._patch = None
+
+    def __enter__(self):
+        def monitored_open(path, *args, **kwargs):
+            candidate = Path(path)
+            if ".csv" in candidate.suffixes:
+                self.paths.append(candidate.resolve())
+            return self._original_open(path, *args, **kwargs)
+
+        self._patch = mock.patch.object(Path, "open", monitored_open)
+        self._patch.start()
+        return self.paths
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._patch.stop()
 
 
 def _summary_row(case_id: int, run_id: str) -> dict:
@@ -144,12 +168,12 @@ class PairValidationTests(unittest.TestCase):
                 document["shards"][-1]["case_end_exclusive"], 24300
             )
             self.assertEqual(
-                Path(document["benchmark_binary_path"]).parent,
-                root / "run" / "inputs",
+                Path(document["benchmark_binary_path"]).parent.resolve(),
+                (root / "run" / "inputs").resolve(),
             )
             self.assertEqual(
-                Path(document["dependency_provenance_path"]).parent,
-                root / "run" / "inputs",
+                Path(document["dependency_provenance_path"]).parent.resolve(),
+                (root / "run" / "inputs").resolve(),
             )
             with self.assertRaises(ArtifactError):
                 prepare_retained_inputs(root / "run", binary, provenance)
@@ -267,6 +291,12 @@ class TransactionTests(unittest.TestCase):
             self.identity["run_id"],
         )
 
+    def _seal_final_run(self):
+        for case_start in (0, 3):
+            self._write_shard(case_start)
+            complete_shard(self.identity_path, case_start)
+        return merge_completed_shards(self.identity_path)
+
     def test_identity_is_exclusive_and_binds_binary_and_provenance(self) -> None:
         with self.assertRaises(ArtifactError):
             seal_identity_manifest(self.identity_path, self.identity)
@@ -305,11 +335,7 @@ class TransactionTests(unittest.TestCase):
         self.assertTrue(Path(shard["summary_partial_path"]).exists())
 
     def test_merge_is_deterministic_and_final_manifest_revalidates(self) -> None:
-        for case_start in (0, 3):
-            self._write_shard(case_start)
-            complete_shard(self.identity_path, case_start)
-
-        final = merge_completed_shards(self.identity_path)
+        final = self._seal_final_run()
         validated = validate_final_run(
             self.identity_path,
             final.final_manifest_path,
@@ -331,6 +357,57 @@ class TransactionTests(unittest.TestCase):
 
         with self.assertRaises(ArtifactError):
             merge_completed_shards(self.identity_path)
+
+    def test_analysis_input_uses_only_paths_returned_by_final_validation(self) -> None:
+        final = self._seal_final_run()
+
+        with _CsvOpenMonitor() as csv_opens:
+            paired = load_validated_analysis_input(
+                self.identity_path,
+                Path(final.final_manifest_path),
+                require_retained_contract=False,
+            )
+
+        self.assertIsInstance(paired, PairedArtifacts)
+        self.assertEqual(csv_opens.count(Path(final.summary_path).resolve()), 2)
+        self.assertEqual(
+            csv_opens.count(Path(final.phase_samples_path).resolve()), 2
+        )
+        self.assertEqual(len(paired.dataset.points), 6)
+        self.assertEqual(len(paired.dataset.exclusions), 0)
+        self.assertEqual(len(paired.phase_diagnostics), 6)
+
+    def test_invalid_final_manifest_fails_before_analysis_csv_open(self) -> None:
+        final = self._seal_final_run()
+        final_path = Path(final.final_manifest_path)
+        document = json.loads(final_path.read_text())
+        document["artifact_schema"] = "unsupported"
+        final_path.chmod(0o644)
+        final_path.write_text(json.dumps(document))
+
+        with _CsvOpenMonitor() as csv_opens:
+            with self.assertRaises(ArtifactError):
+                load_validated_analysis_input(
+                    self.identity_path,
+                    final_path,
+                    require_retained_contract=False,
+                )
+
+        self.assertEqual(csv_opens, [])
+
+    def test_partial_manifest_path_fails_before_analysis_csv_open(self) -> None:
+        final = self._seal_final_run()
+        partial_path = Path(final.final_manifest_path + ".partial")
+
+        with _CsvOpenMonitor() as csv_opens:
+            with self.assertRaises(ArtifactError):
+                load_validated_analysis_input(
+                    self.identity_path,
+                    partial_path,
+                    require_retained_contract=False,
+                )
+
+        self.assertEqual(csv_opens, [])
 
 
 if __name__ == "__main__":

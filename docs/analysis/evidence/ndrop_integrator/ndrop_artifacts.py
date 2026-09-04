@@ -24,6 +24,7 @@ import sys
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from analyze_screening import (
+    PairedArtifacts,
     ScreeningInputError,
     ingest_paired_artifacts,
     ingest_rows,
@@ -217,6 +218,7 @@ class PairValidation:
     summary_rows: int
     phase_rows: int
     case_ids: Tuple[int, ...]
+    paired_artifacts: Optional[PairedArtifacts] = None
 
 
 @dataclass(frozen=True)
@@ -235,6 +237,7 @@ class FinalRun:
     phase_samples_path: str
     summary_rows: int
     phase_rows: int
+    paired_artifacts: Optional[PairedArtifacts] = None
 
 
 def _utc_now() -> str:
@@ -491,6 +494,7 @@ def validate_csv_pair(
     expected_run_id: Optional[str] = None,
     expected_case_ids: Optional[Iterable[int]] = None,
     identity: Optional[Mapping] = None,
+    include_paired_artifacts: bool = False,
 ) -> PairValidation:
     """Validate exact schemas and stream a paired summary/phase artifact.
 
@@ -514,7 +518,7 @@ def validate_csv_pair(
         raise ArtifactError("summary CSV must contain at least one row")
 
     try:
-        ingest_rows(summaries)
+        dataset = ingest_rows(summaries)
     except ScreeningInputError as error:
         raise ArtifactError("summary validation failed: {}".format(error))
     case_ids = tuple(_integer(row["case_id"], "case_id") for row in summaries)
@@ -532,6 +536,7 @@ def validate_csv_pair(
                 _validate_retained_case(row)
 
     phase_rows = 0
+    phase_diagnostics = []
     try:
         with phase_file.open(newline="") as stream:
             reader = csv.DictReader(stream, strict=True)
@@ -562,11 +567,13 @@ def validate_csv_pair(
                     current.append(row)
                     phase_rows += 1
                 try:
-                    ingest_paired_artifacts([summary], current)
+                    paired = ingest_paired_artifacts([summary], current)
                 except ScreeningInputError as error:
                     raise ArtifactError(
                         "paired phase validation failed: {}".format(error)
                     )
+                if include_paired_artifacts:
+                    phase_diagnostics.extend(paired.phase_diagnostics)
             try:
                 extra = next(iterator)
             except StopIteration:
@@ -578,7 +585,12 @@ def validate_csv_pair(
     except (OSError, csv.Error) as error:
         raise ArtifactError("cannot decode phase sidecar CSV: {}".format(error))
 
-    return PairValidation(run_id, len(summaries), phase_rows, case_ids)
+    paired_artifacts = None
+    if include_paired_artifacts:
+        paired_artifacts = PairedArtifacts(dataset, tuple(phase_diagnostics))
+    return PairValidation(
+        run_id, len(summaries), phase_rows, case_ids, paired_artifacts
+    )
 
 
 def _build_shards(
@@ -1282,6 +1294,7 @@ def validate_final_run(
     final_manifest_path: Path,
     *,
     require_retained_contract: bool = True,
+    include_paired_artifacts: bool = False,
 ) -> FinalRun:
     """Revalidate every retained-run binding from identity through merge."""
 
@@ -1339,6 +1352,7 @@ def validate_final_run(
         expected_run_id=identity["run_id"],
         expected_case_ids=range(identity["total_case_count"]),
         identity=identity,
+        include_paired_artifacts=include_paired_artifacts,
     )
     if validated.summary_rows != document["summary_rows"]:
         raise ArtifactError("final summary row count is stale")
@@ -1350,7 +1364,27 @@ def validate_final_run(
         document["phase_samples_path"],
         validated.summary_rows,
         validated.phase_rows,
+        validated.paired_artifacts,
     )
+
+
+def load_validated_analysis_input(
+    identity_path: Path,
+    final_manifest_path: Path,
+    *,
+    require_retained_contract: bool = True,
+) -> PairedArtifacts:
+    """Validate provenance before decoding only the bound analysis inputs."""
+
+    final_run = validate_final_run(
+        identity_path,
+        final_manifest_path,
+        require_retained_contract=require_retained_contract,
+        include_paired_artifacts=True,
+    )
+    if final_run.paired_artifacts is None:
+        raise ArtifactError("validated analysis input was not retained")
+    return final_run.paired_artifacts
 
 
 def _preflight_free_space(identity: Mapping) -> None:
