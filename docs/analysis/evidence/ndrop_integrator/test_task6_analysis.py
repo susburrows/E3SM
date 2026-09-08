@@ -9,7 +9,12 @@ import tempfile
 import unittest
 from unittest import mock
 
-from analyze_screening import GroupKey
+from analyze_screening import (
+    AnalysisDataset,
+    GroupKey,
+    ScreeningPoint,
+    TimingEstimate,
+)
 from ndrop_artifacts import (
     PHASE_COLUMNS,
     SUMMARY_COLUMNS,
@@ -451,6 +456,128 @@ class Task6AnalysisTests(unittest.TestCase):
                 mutate(completed.analysis_path, completed.receipt_path)
                 with self.assertRaises(ArtifactError):
                     self._validate_retained(module, directory)
+
+    def test_direct_matrix_reports_only_measured_same_timestep_ratios(self) -> None:
+        module = importlib.import_module("task6_analysis")
+
+        def point(case_id, method, dt, median, lower, upper, fe_nsubmix=None):
+            return ScreeningPoint(
+                case_id,
+                self.group,
+                method,
+                dt,
+                fe_nsubmix,
+                0.003,
+                TimingEstimate(median, lower, upper),
+            )
+
+        dataset = AnalysisDataset(
+            (
+                point(1, "imex", 50.0, 2.0, 1.8, 2.2),
+                point(2, "backward_euler", 50.0, 4.0, 3.8, 4.2),
+                point(3, "forward_euler", 50.0, 2.1, 1.7, 2.4, 1),
+                point(4, "imex", 100.0, 2.0, 1.8, 2.2),
+                point(5, "forward_euler", 100.0, 1.0, 0.9, 1.1, 2),
+            ),
+            (),
+        )
+
+        payload = module.build_direct_same_timestep_payload(dataset)
+
+        self.assertEqual(
+            payload["status_counts"],
+            {
+                "determinate": 3,
+                "indeterminate": 1,
+                "unavailable": 6,
+                "unsupported_cost_basis": 0,
+            },
+        )
+        imex_be_50 = next(
+            item
+            for item in payload["comparisons"]
+            if item["pairing"] == "imex_vs_backward_euler"
+            and item["dt_seconds"] == 50.0
+        )
+        self.assertEqual(imex_be_50["result"]["status"], "determinate")
+        self.assertEqual(
+            imex_be_50["result"]["runtime_ratio_first_over_second"], 0.5
+        )
+        self.assertAlmostEqual(
+            imex_be_50["result"]["runtime_ratio_ci95_lower"], 1.8 / 4.2
+        )
+        self.assertAlmostEqual(
+            imex_be_50["result"]["runtime_ratio_ci95_upper"], 2.2 / 3.8
+        )
+        unavailable = [
+            item
+            for item in payload["comparisons"]
+            if item["result"]["status"] == "unavailable"
+        ]
+        self.assertTrue(unavailable)
+        self.assertTrue(
+            all(set(item["result"]) == {"status"} for item in unavailable)
+        )
+        self.assertEqual(payload["input_exclusion_count"], 0)
+
+    def test_cross_timestep_direct_cost_is_status_only_unsupported(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        first = ScreeningPoint(
+            1,
+            self.group,
+            "imex",
+            50.0,
+            None,
+            0.003,
+            TimingEstimate(2.0, 1.8, 2.2),
+        )
+        second = ScreeningPoint(
+            2,
+            self.group,
+            "backward_euler",
+            100.0,
+            None,
+            0.003,
+            TimingEstimate(4.0, 3.8, 4.2),
+        )
+
+        result = module._direct_comparison_result(first, second)
+
+        self.assertEqual(result, {"status": "unsupported_cost_basis"})
+
+    def test_retained_direct_matrix_reuses_receipt_and_validated_boundary(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        output_directory = self.root / "direct-retained-output"
+        with mock.patch.object(
+            module,
+            "load_validated_analysis_input",
+            return_value=self.paired,
+        ) as loader, _CsvOpenMonitor() as csv_opens:
+            completed = module.run_retained_direct_task6_analysis(
+                self.identity_path,
+                Path(self.final_run.final_manifest_path),
+                output_directory,
+                analysis_source_commit=self.analysis_source_commit,
+                analysis_command=self.analysis_command,
+            )
+
+        loader.assert_called_once_with(
+            self.identity_path,
+            Path(self.final_run.final_manifest_path),
+            require_retained_contract=True,
+        )
+        self.assertEqual(csv_opens, [])
+        validated = module.validate_retained_direct_task6_output(
+            self.identity_path,
+            Path(self.final_run.final_manifest_path),
+            output_directory,
+            analysis_source_commit=self.analysis_source_commit,
+            analysis_command=self.analysis_command,
+        )
+        self.assertEqual(validated, completed)
+        payload = json.loads(completed.analysis_path.read_text())
+        self.assertEqual(payload["analysis_mode"], "direct_same_timestep")
+        self.assertEqual(payload["status_counts"]["unsupported_cost_basis"], 0)
 
     @staticmethod
     def _mutate_receipt(path: Path, name: str, value: str) -> None:
