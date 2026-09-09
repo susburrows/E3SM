@@ -21,9 +21,11 @@ from ndrop_artifacts import (
     ArtifactError,
     build_identity_document,
     complete_shard,
+    expected_retained_case,
     load_validated_analysis_input,
     merge_completed_shards,
     seal_identity_manifest,
+    sha256_file,
 )
 from test_analyze_screening import _phase_rows
 from test_ndrop_artifacts import _CsvOpenMonitor, _summary_row
@@ -578,6 +580,315 @@ class Task6AnalysisTests(unittest.TestCase):
         payload = json.loads(completed.analysis_path.read_text())
         self.assertEqual(payload["analysis_mode"], "direct_same_timestep")
         self.assertEqual(payload["status_counts"]["unsupported_cost_basis"], 0)
+
+    @staticmethod
+    def _golden_production_nsubmix(nlev, mixing_scale, dt_seconds):
+        intervals = (33.33, 50.0, 75.0, 100.0, 150.0, 300.0)
+        lower = {
+            1: (1, 1, 2, 2, 3, 5),
+            2: (3, 4, 6, 8, 11, 22),
+            3: (3, 5, 7, 9, 14, 27),
+        }
+        higher = {
+            1: (5, 7, 11, 14, 21, 42),
+            2: (25, 37, 55, 73, 109, 217),
+            3: (30, 44, 66, 88, 132, 263),
+        }
+        table = lower if mixing_scale == 0.05 else higher
+        fallback = (
+            (4, 6, 9, 12, 18, 36)
+            if mixing_scale == 0.05
+            else (39, 59, 88, 117, 176, 351)
+        )
+        return table.get(nlev, fallback)[intervals.index(dt_seconds)]
+
+    def _synthetic_direct_payload(self):
+        comparisons = []
+        measured = {1, 2, 3, 5, 8, 16, 21}
+        for case_id in range(0, 24300, 9):
+            case = expected_retained_case(case_id)
+            nsubmix = self._golden_production_nsubmix(
+                case["nlev"], case["mixing_scale"], case["dt"]
+            )
+            if nsubmix not in measured:
+                continue
+            group = {
+                "nlev": case["nlev"],
+                "nonzero_state_fields": case["nonzero_state_fields"],
+                "batch_size": case["batch_size"],
+                "mixing_index": case["mixing_index"],
+                "mixing_scale": case["mixing_scale"],
+            }
+            first_axis = {
+                "method": "forward_euler",
+                "fe_nsubmix": nsubmix,
+            }
+            for comparator in ("imex", "backward_euler"):
+                result = (
+                    {
+                        "status": "determinate",
+                        "runtime_ratio_first_over_second": 0.5,
+                        "runtime_ratio_ci95_lower": 0.4,
+                        "runtime_ratio_ci95_upper": 0.6,
+                        "winner": first_axis,
+                    }
+                    if comparator == "imex"
+                    else {
+                        "status": "indeterminate",
+                        "runtime_ratio_first_over_second": 1.0,
+                        "runtime_ratio_ci95_lower": 0.8,
+                        "runtime_ratio_ci95_upper": 1.2,
+                    }
+                )
+                comparisons.append(
+                    {
+                        "pairing": "forward_euler_nsubmix_{}_vs_{}".format(
+                            nsubmix, comparator
+                        ),
+                        "group": group,
+                        "dt_seconds": case["dt"],
+                        "first_axis": first_axis,
+                        "second_axis": {"method": comparator},
+                        "result": result,
+                    }
+                )
+        return {
+            "analysis_mode": "direct_same_timestep",
+            "timing_source": "primary_uninstrumented",
+            "comparisons": comparisons,
+        }
+
+    def _seal_synthetic_direct_output(self, module, payload, directory):
+        directory.mkdir()
+        analysis_path = directory / "analysis.json"
+        receipt_path = directory / "analysis.done.json"
+        analysis_path.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n")
+        receipt = {
+            "artifact_schema": module.RETAINED_RECEIPT_SCHEMA,
+            "completion_status": "complete",
+            "identity_manifest_sha256": sha256_file(self.identity_path),
+            "final_manifest_sha256": sha256_file(
+                Path(self.final_run.final_manifest_path)
+            ),
+            "analysis_source_commit": "4" * 40,
+            "analysis_parameters": module._direct_analysis_parameters(),
+            "analysis_command": ["synthetic-direct-analysis"],
+            "analysis_output": "analysis.json",
+            "analysis_output_sha256": sha256_file(analysis_path),
+        }
+        receipt_path.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+        return analysis_path, receipt_path
+
+    def test_production_nsubmix_matches_complete_retained_source_map(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        levels = (1, 2, 3, 16, 32, 64, 72, 127, 128)
+        intervals = (33.33, 50.0, 75.0, 100.0, 150.0, 300.0)
+        for mixing_scale in (0.05, 0.5):
+            for nlev in levels:
+                for dt_seconds in intervals:
+                    with self.subTest(
+                        mixing_scale=mixing_scale,
+                        nlev=nlev,
+                        dt_seconds=dt_seconds,
+                    ):
+                        self.assertEqual(
+                            module.reconstruct_production_nsubmix(
+                                nlev, mixing_scale, dt_seconds
+                            ),
+                            self._golden_production_nsubmix(
+                                nlev, mixing_scale, dt_seconds
+                            ),
+                        )
+
+    def test_first_level_controller_drives_single_level_submixing(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        self.assertEqual(module.reconstruct_production_nsubmix(1, 0.05, 75.0), 2)
+        self.assertEqual(module.reconstruct_production_nsubmix(1, 0.5, 33.33), 5)
+
+    def test_computed_nsubmix_payload_has_complete_exact_only_denominator(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        payload = module.build_computed_nsubmix_exact_payload(
+            self._synthetic_direct_payload()
+        )
+
+        self.assertEqual(len(payload["computed_nsubmix_map"]), 108)
+        self.assertEqual(len(payload["comparisons"]), 5400)
+        self.assertEqual(len(payload["strata"]), 216)
+        self.assertTrue(
+            all(item["designed_workload_count"] == 25 for item in payload["strata"])
+        )
+        self.assertEqual(
+            payload["design_counts"],
+            {
+                "workload_timestep_cases": 2700,
+                "pairwise_comparison_opportunities": 5400,
+                "exact_match_workload_opportunities": 300,
+                "exact_match_comparison_opportunities": 600,
+                "valid_direct_comparisons": 600,
+            },
+        )
+        self.assertEqual(
+            payload["support_counts"],
+            {
+                "exact_measured": 600,
+                "not_measured_in_range": 1950,
+                "outside_measured_range": 2850,
+            },
+        )
+        self.assertEqual(payload["status_counts"]["determinate"], 300)
+        self.assertEqual(payload["status_counts"]["indeterminate"], 300)
+        self.assertEqual(payload["status_counts"]["unavailable"], 4800)
+        unavailable = [
+            item
+            for item in payload["comparisons"]
+            if item["result"]["status"] == "unavailable"
+        ]
+        self.assertTrue(unavailable)
+        self.assertTrue(
+            all(set(item["result"]) == {"status"} for item in unavailable)
+        )
+        self.assertFalse(payload["adaptive_selection_path_timed"])
+        self.assertEqual(payload["timing_source"], "primary_uninstrumented")
+        self.assertEqual(
+            [item["label"] for item in payload["mixing_conditions"]],
+            [
+                "Lower-intensity mixing (scale 0.05)",
+                "Higher-intensity mixing (scale 0.5)",
+            ],
+        )
+
+        missing = self._synthetic_direct_payload()
+        missing["comparisons"].pop(0)
+        missing_payload = module.build_computed_nsubmix_exact_payload(missing)
+        self.assertEqual(
+            missing_payload["design_counts"]["valid_direct_comparisons"], 599
+        )
+        self.assertEqual(missing_payload["status_counts"]["unavailable"], 4801)
+
+    def test_computed_nsubmix_payload_rejects_nonprimary_parent_data(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        mutations = {
+            "wrong_mode": ("analysis_mode", "matched_error"),
+            "instrumented": ("timing_source", "instrumented"),
+            "phase_diagnostics": ("phase_diagnostics", []),
+        }
+        for name, (field, value) in mutations.items():
+            with self.subTest(name=name):
+                payload = self._synthetic_direct_payload()
+                payload[field] = value
+                with self.assertRaises(ArtifactError):
+                    module.build_computed_nsubmix_exact_payload(payload)
+
+    def test_computed_nsubmix_payload_rejects_bad_selected_records(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        mutations = {
+            "duplicate": lambda records: records.append(dict(records[0])),
+            "reversed": lambda records: records[0].update(
+                {
+                    "first_axis": records[0]["second_axis"],
+                    "second_axis": records[0]["first_axis"],
+                }
+            ),
+            "wrong_winner": lambda records: records[0]["result"].update(
+                {"winner": {"method": "imex"}}
+            ),
+            "unsupported": lambda records: records[0].update(
+                {"result": {"status": "unsupported_cost_basis"}}
+            ),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                payload = self._synthetic_direct_payload()
+                mutate(payload["comparisons"])
+                with self.assertRaises((ArtifactError, ValueError)):
+                    module.build_computed_nsubmix_exact_payload(payload)
+
+    def test_retained_computed_nsubmix_output_is_parent_bound(self) -> None:
+        module = importlib.import_module("task6_analysis")
+        direct_directory = self.root / "direct-parent"
+        parent_analysis, parent_receipt = self._seal_synthetic_direct_output(
+            module, self._synthetic_direct_payload(), direct_directory
+        )
+        output_directory = self.root / "computed-output"
+        command = ("task6_analysis.run_retained_computed_nsubmix_exact_analysis",)
+        with _CsvOpenMonitor() as csv_opens:
+            completed = module.run_retained_computed_nsubmix_exact_analysis(
+                self.identity_path,
+                Path(self.final_run.final_manifest_path),
+                direct_directory,
+                output_directory,
+                direct_analysis_source_commit="4" * 40,
+                direct_analysis_command=("synthetic-direct-analysis",),
+                analysis_source_commit="5" * 40,
+                analysis_command=command,
+            )
+        self.assertEqual(csv_opens, [])
+        validated = module.validate_retained_computed_nsubmix_exact_output(
+            self.identity_path,
+            Path(self.final_run.final_manifest_path),
+            direct_directory,
+            output_directory,
+            direct_analysis_source_commit="4" * 40,
+            direct_analysis_command=("synthetic-direct-analysis",),
+            analysis_source_commit="5" * 40,
+            analysis_command=command,
+        )
+        self.assertEqual(validated, completed)
+        receipt = json.loads(completed.receipt_path.read_text())
+        self.assertEqual(
+            receipt["analysis_parameters"]["parent_analysis_output_sha256"],
+            sha256_file(parent_analysis),
+        )
+        self.assertEqual(
+            receipt["analysis_parameters"]["parent_analysis_receipt_sha256"],
+            sha256_file(parent_receipt),
+        )
+
+        derived_bytes = completed.analysis_path.read_bytes()
+        completed.analysis_path.chmod(0o644)
+        completed.analysis_path.write_bytes(derived_bytes + b"tampered\n")
+        with self.assertRaises(ArtifactError):
+            module.validate_retained_computed_nsubmix_exact_output(
+                self.identity_path,
+                Path(self.final_run.final_manifest_path),
+                direct_directory,
+                output_directory,
+                direct_analysis_source_commit="4" * 40,
+                direct_analysis_command=("synthetic-direct-analysis",),
+                analysis_source_commit="5" * 40,
+                analysis_command=command,
+            )
+        completed.analysis_path.write_bytes(derived_bytes)
+
+        parent_receipt_bytes = parent_receipt.read_bytes()
+        parent_receipt.chmod(0o644)
+        self._mutate_receipt(parent_receipt, "completion_status", "incomplete")
+        with self.assertRaises(ArtifactError):
+            module.validate_retained_computed_nsubmix_exact_output(
+                self.identity_path,
+                Path(self.final_run.final_manifest_path),
+                direct_directory,
+                output_directory,
+                direct_analysis_source_commit="4" * 40,
+                direct_analysis_command=("synthetic-direct-analysis",),
+                analysis_source_commit="5" * 40,
+                analysis_command=command,
+            )
+        parent_receipt.write_bytes(parent_receipt_bytes)
+
+        parent_analysis.chmod(0o644)
+        parent_analysis.write_bytes(parent_analysis.read_bytes() + b"tampered\n")
+        with self.assertRaises(ArtifactError):
+            module.validate_retained_computed_nsubmix_exact_output(
+                self.identity_path,
+                Path(self.final_run.final_manifest_path),
+                direct_directory,
+                output_directory,
+                direct_analysis_source_commit="4" * 40,
+                direct_analysis_command=("synthetic-direct-analysis",),
+                analysis_source_commit="5" * 40,
+                analysis_command=command,
+            )
 
     @staticmethod
     def _mutate_receipt(path: Path, name: str, value: str) -> None:
