@@ -1055,11 +1055,12 @@ def _shard_for_start(identity: Mapping, case_start: int) -> Mapping:
 
 
 def _rename_without_overwrite(source: Path, destination: Path) -> None:
-    if destination.exists():
-        raise ArtifactError("refusing to overwrite {}".format(destination))
     try:
-        os.rename(source, destination)
+        os.link(source, destination)
+        os.unlink(source)
         _fsync_directory(destination.parent)
+    except FileExistsError:
+        raise ArtifactError("refusing to overwrite {}".format(destination))
     except OSError as error:
         raise ArtifactError(
             "cannot rename {} to {}: {}".format(source, destination, error)

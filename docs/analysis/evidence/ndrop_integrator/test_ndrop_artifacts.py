@@ -4,10 +4,12 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+import stat
 import tempfile
 import unittest
 from unittest import mock
 
+import ndrop_artifacts as artifacts
 from analyze_screening import PairedArtifacts
 from ndrop_artifacts import (
     ArtifactError,
@@ -331,6 +333,86 @@ class TransactionTests(unittest.TestCase):
         Path(completion.summary_path).write_text("tampered\n")
         with self.assertRaises(ArtifactError):
             validate_completed_shard(self.identity_path, 0)
+
+    def test_promotion_is_atomic_and_never_overwrites(self) -> None:
+        source = self.root / "promotion.partial"
+        destination = self.root / "promotion.json"
+        source.write_text("candidate")
+        real_link = artifacts.os.link
+
+        def collide(source_path, destination_path):
+            Path(destination_path).write_text("competitor")
+            return real_link(source_path, destination_path)
+
+        with mock.patch.object(artifacts.os, "link", side_effect=collide):
+            with self.assertRaises(ArtifactError):
+                artifacts._rename_without_overwrite(source, destination)
+
+        self.assertEqual(destination.read_text(), "competitor")
+        self.assertEqual(source.read_text(), "candidate")
+
+        dangling = self.root / "dangling.json"
+        dangling.symlink_to(self.root / "missing-target")
+        with self.assertRaises(ArtifactError):
+            artifacts._rename_without_overwrite(source, dangling)
+        self.assertTrue(dangling.is_symlink())
+        self.assertEqual(source.read_text(), "candidate")
+
+        self._write_shard(0)
+        with mock.patch.object(
+            artifacts.os, "link", side_effect=OSError("synthetic rename failure")
+        ):
+            with self.assertRaisesRegex(ArtifactError, "cannot rename"):
+                complete_shard(self.identity_path, 0)
+        shard = self.identity["shards"][0]
+        self.assertFalse(Path(shard["completion_path"]).exists())
+        self.assertTrue(Path(shard["summary_partial_path"]).exists())
+        self.assertTrue(Path(shard["phase_samples_partial_path"]).exists())
+
+    def test_completion_write_and_flush_failures_never_publish_marker(self) -> None:
+        real_fdopen = artifacts.os.fdopen
+
+        class FailingWriteStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self.stream.close()
+
+            def write(self, payload):
+                raise OSError("synthetic write failure")
+
+        self._write_shard(0)
+        with mock.patch.object(
+            artifacts.os,
+            "fdopen",
+            side_effect=lambda *args, **kwargs: FailingWriteStream(
+                real_fdopen(*args, **kwargs)
+            ),
+        ):
+            with self.assertRaisesRegex(ArtifactError, "cannot write"):
+                complete_shard(self.identity_path, 0)
+        first = self.identity["shards"][0]
+        self.assertFalse(Path(first["completion_path"]).exists())
+
+        real_fsync = artifacts.os.fsync
+
+        def fail_regular_file_fsync(descriptor):
+            if stat.S_ISREG(artifacts.os.fstat(descriptor).st_mode):
+                raise OSError("synthetic fsync failure")
+            return real_fsync(descriptor)
+
+        self._write_shard(3)
+        with mock.patch.object(
+            artifacts.os, "fsync", side_effect=fail_regular_file_fsync
+        ):
+            with self.assertRaisesRegex(ArtifactError, "cannot write"):
+                complete_shard(self.identity_path, 3)
+        second = self.identity["shards"][1]
+        self.assertFalse(Path(second["completion_path"]).exists())
 
     def test_malformed_pair_never_gets_a_completion_marker(self) -> None:
         self._write_shard(0)
