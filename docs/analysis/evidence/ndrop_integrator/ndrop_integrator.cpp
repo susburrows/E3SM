@@ -116,7 +116,9 @@ bool update_explicit_physical_residual(
     const std::vector<Real> &old, const std::vector<Real> &raw,
     const std::vector<Real> &source, const PreparedOperator &op,
     const Real dt, const bool interstitial,
-    const std::vector<Real> *cloudborne, Real &overall_max) {
+    const std::vector<Real> *cloudborne, Real &overall_max,
+    ReplayDiagnosticDetail *detail = nullptr, const int field = 0,
+    const std::uint32_t substep = 0) {
   Real residual_max = 0;
   Real scale_max = 0;
   for (std::size_t k = 0; k < op.nlev(); ++k) {
@@ -190,6 +192,13 @@ bool update_explicit_physical_residual(
     return false;
   }
   overall_max = std::max(overall_max, normalized);
+  if (detail != nullptr) {
+    auto &maximum = detail->physical_residual[field];
+    if (!maximum || normalized > maximum->normalized) {
+      maximum = ReplayResidualMaximum{residual_max, scale_max, normalized,
+                                      substep};
+    }
+  }
   return std::isfinite(overall_max);
 }
 
@@ -596,17 +605,35 @@ AdvanceResult advance_forward_euler(const State &initial,
   stopwatch.phase(&AdvancePhaseTimings::setup);
   AdvanceResult result;
   result.state = State(initial.nlev());
+  ReplayDiagnosticDetail *detail = nullptr;
+  if (control.collect_detailed_diagnostics &&
+      control.collect_replay_diagnostics) {
+    detail = &result.diagnostics.replay_detail.emplace();
+  }
+  const auto fail = [&](ReplayDiagnosticStage stage,
+                        ReplayDiagnosticReason reason) {
+    if (detail != nullptr) {
+      detail->failure_stage = stage;
+      detail->failure_reason = reason;
+    }
+  };
   if (options.forced_substeps < 0) {
     result.message = "forced_substeps must be nonnegative";
+    fail(ReplayDiagnosticStage::diagnostics,
+         ReplayDiagnosticReason::diagnostic_incomplete);
     return result;
   }
   if (!validate(initial, data, dt, result.message)) {
+    fail(ReplayDiagnosticStage::diagnostics,
+         ReplayDiagnosticReason::diagnostic_incomplete);
     return result;
   }
 
   const PreparedOperator op = prepare_operator(data);
   if (!finite_prepared_operator(op)) {
     result.message = "derived mixing rates must be finite";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
   const int nsubmix = options.forced_substeps > 0
@@ -614,10 +641,15 @@ AdvanceResult advance_forward_euler(const State &initial,
                           : production_nsubmix(op, dt);
   if (nsubmix <= 0) {
     result.message = "calculated substep count is outside the supported range";
+    fail(ReplayDiagnosticStage::diagnostics,
+         ReplayDiagnosticReason::diagnostic_incomplete);
     return result;
   }
 
   result.diagnostics.nsubmix = nsubmix;
+  if (detail != nullptr) {
+    detail->expected_substeps = static_cast<std::uint32_t>(nsubmix);
+  }
   result.diagnostics.activation_limiter_count =
       op.activation_limiter_count;
   result.diagnostics.max_inverse_mixing_time =
@@ -629,6 +661,8 @@ AdvanceResult advance_forward_euler(const State &initial,
     if (!checked_column_ledgers(initial, op.pressure_weight,
                                 result.diagnostics.initial_ledger,
                                 result.message)) {
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     stopwatch.phase(&AdvancePhaseTimings::setup);
@@ -641,6 +675,9 @@ AdvanceResult advance_forward_euler(const State &initial,
   stopwatch.phase(&AdvancePhaseTimings::update);
 
   for (int step = 0; step < nsubmix; ++step) {
+    if (detail != nullptr) {
+      detail->status = ReplayDiagnosticStatus::partial;
+    }
     if (step > 0) {
       std::swap(old_index, new_index);
     }
@@ -649,6 +686,8 @@ AdvanceResult advance_forward_euler(const State &initial,
     const auto nc_source = droplet_activation_source(old, op);
     if (!finite_values(nc_source)) {
       result.message = "droplet activation source contains a nonfinite value";
+      fail(ReplayDiagnosticStage::assembly,
+           ReplayDiagnosticReason::assembly_nonfinite);
       return result;
     }
     std::array<std::vector<Real>, num_constituents> sources;
@@ -656,17 +695,27 @@ AdvanceResult advance_forward_euler(const State &initial,
       sources[j] = aerosol_activation_source(old, op, j);
       if (!finite_values(sources[j])) {
         result.message = "aerosol activation source contains a nonfinite value";
+        fail(ReplayDiagnosticStage::assembly,
+             ReplayDiagnosticReason::assembly_nonfinite);
         return result;
       }
     }
 
     std::vector<Real> raw_droplet(initial.nlev(), 0);
+    if (detail != nullptr) {
+      detail->raw_minimum_valid[0] = false;
+      detail->negative_counts_valid[0] = false;
+      detail->fe_clipping_count_valid[0] = false;
+      detail->fe_weighted_deficit_valid[0] = false;
+    }
     for (std::size_t k = 0; k < initial.nlev(); ++k) {
       raw_droplet[k] =
           cloud_raw(old.droplet_number, nc_source, op, k, substep);
     }
     if (!finite_values(raw_droplet)) {
       result.message = "Forward Euler update produced a nonfinite value";
+      fail(ReplayDiagnosticStage::raw_state,
+           ReplayDiagnosticReason::raw_nonfinite);
       return result;
     }
     if (control.collect_detailed_diagnostics) {
@@ -674,8 +723,12 @@ AdvanceResult advance_forward_euler(const State &initial,
       if (!update_explicit_physical_residual(
               old.droplet_number, raw_droplet, nc_source, op, substep,
               false, nullptr,
-              result.diagnostics.normalized_physical_residual)) {
+              result.diagnostics.normalized_physical_residual, detail, 0,
+              static_cast<std::uint32_t>(step))) {
         result.message = "Forward Euler physical residual is nonfinite";
+        if (detail != nullptr) detail->physical_residual[0].reset();
+        fail(ReplayDiagnosticStage::physical_residual,
+             ReplayDiagnosticReason::physical_residual_nonfinite);
         return result;
       }
       stopwatch.phase(&AdvancePhaseTimings::update);
@@ -693,19 +746,37 @@ AdvanceResult advance_forward_euler(const State &initial,
                 result.diagnostics.droplet_clipping_count,
                 result.diagnostics.droplet_raw_minimum, result.diagnostics,
                 next.droplet_number[k], result.message)) {
+          fail(ReplayDiagnosticStage::clipping,
+               ReplayDiagnosticReason::clipping_nonfinite);
           return result;
         }
       } else {
         if (!record_raw_value(raw, result.diagnostics.droplet_raw_minimum,
                               result.diagnostics, result.message)) {
+          fail(ReplayDiagnosticStage::raw_state,
+               ReplayDiagnosticReason::raw_nonfinite);
           return result;
         }
         next.droplet_number[k] = raw;
       }
     }
+    if (detail != nullptr) {
+      detail->raw_minimum_valid[0] = true;
+      detail->negative_counts_valid[0] = true;
+      detail->fe_clipping_count_valid[0] = true;
+      detail->fe_weighted_deficit_valid[0] = true;
+    }
 
     for (int j = 0; j < num_constituents; ++j) {
       auto &field_diag = result.diagnostics.field_clipping[j];
+      if (detail != nullptr) {
+        for (const int f : {1 + j, 26 + j}) {
+          detail->raw_minimum_valid[f] = false;
+          detail->negative_counts_valid[f] = false;
+          detail->fe_clipping_count_valid[f] = false;
+          detail->fe_weighted_deficit_valid[f] = false;
+        }
+      }
       std::vector<Real> raw_cloud(initial.nlev(), 0);
       std::vector<Real> raw_interstitial(initial.nlev(), 0);
       for (std::size_t k = 0; k < initial.nlev(); ++k) {
@@ -717,19 +788,31 @@ AdvanceResult advance_forward_euler(const State &initial,
       }
       if (!finite_values(raw_cloud) || !finite_values(raw_interstitial)) {
         result.message = "Forward Euler update produced a nonfinite value";
+        fail(ReplayDiagnosticStage::raw_state,
+             ReplayDiagnosticReason::raw_nonfinite);
         return result;
       }
       if (control.collect_detailed_diagnostics) {
         stopwatch.phase(&AdvancePhaseTimings::diagnostics);
-        if (!update_explicit_physical_residual(
+        const bool cloud_residual_ok = update_explicit_physical_residual(
                 old.cloudborne[j], raw_cloud, sources[j], op, substep,
                 false, nullptr,
-                result.diagnostics.normalized_physical_residual) ||
-            !update_explicit_physical_residual(
+                result.diagnostics.normalized_physical_residual, detail,
+                26 + j, static_cast<std::uint32_t>(step));
+        const bool interstitial_residual_ok = cloud_residual_ok &&
+            update_explicit_physical_residual(
                 old.interstitial[j], raw_interstitial, sources[j], op,
                 substep, true, &old.cloudborne[j],
-                result.diagnostics.normalized_physical_residual)) {
+                result.diagnostics.normalized_physical_residual, detail,
+                1 + j, static_cast<std::uint32_t>(step));
+        if (!cloud_residual_ok || !interstitial_residual_ok) {
+          if (detail != nullptr) {
+            detail->physical_residual[cloud_residual_ok ? 1 + j : 26 + j]
+                .reset();
+          }
           result.message = "Forward Euler physical residual is nonfinite";
+          fail(ReplayDiagnosticStage::physical_residual,
+               ReplayDiagnosticReason::physical_residual_nonfinite);
           return result;
         }
         stopwatch.phase(&AdvancePhaseTimings::update);
@@ -756,6 +839,8 @@ AdvanceResult advance_forward_euler(const State &initial,
                              field_diag.interstitial_raw_minimum,
                              result.diagnostics, next.interstitial[j][k],
                              result.message)) {
+            fail(ReplayDiagnosticStage::clipping,
+                 ReplayDiagnosticReason::clipping_nonfinite);
             return result;
           }
         } else {
@@ -765,12 +850,25 @@ AdvanceResult advance_forward_euler(const State &initial,
               !record_raw_value(raw_interstitial[k],
                                 field_diag.interstitial_raw_minimum,
                                 result.diagnostics, result.message)) {
+            fail(ReplayDiagnosticStage::raw_state,
+                 ReplayDiagnosticReason::raw_nonfinite);
             return result;
           }
           next.cloudborne[j][k] = raw_cloud[k];
           next.interstitial[j][k] = raw_interstitial[k];
         }
       }
+      if (detail != nullptr) {
+        for (const int f : {1 + j, 26 + j}) {
+          detail->raw_minimum_valid[f] = true;
+          detail->negative_counts_valid[f] = true;
+          detail->fe_clipping_count_valid[f] = true;
+          detail->fe_weighted_deficit_valid[f] = true;
+        }
+      }
+    }
+    if (detail != nullptr) {
+      ++detail->completed_substeps;
     }
   }
 
@@ -783,9 +881,12 @@ AdvanceResult advance_forward_euler(const State &initial,
                        field_diag.cloudborne_weighted_deficit, delta)) {
         result.message =
             "Forward Euler clipping ledger diagnostic overflowed";
+        fail(ReplayDiagnosticStage::ledger,
+             ReplayDiagnosticReason::ledger_nonfinite);
         return result;
       }
       result.diagnostics.clipping_ledger_delta[j] = delta;
+      if (detail != nullptr) detail->clipping_ledger_valid[j] = true;
     }
     stopwatch.phase(&AdvancePhaseTimings::update);
   }
@@ -793,6 +894,8 @@ AdvanceResult advance_forward_euler(const State &initial,
   result.state = buffers[new_index];
   if (!apply_zero_cloud_postprocess(result.state, data.cloud_fraction,
                                     result.message)) {
+    fail(ReplayDiagnosticStage::projection,
+         ReplayDiagnosticReason::projection_nonfinite);
     return result;
   }
   if (!control.collect_detailed_diagnostics) {
@@ -806,6 +909,8 @@ AdvanceResult advance_forward_euler(const State &initial,
   if (!checked_column_ledgers(result.state, op.pressure_weight,
                               result.diagnostics.final_ledger,
                               result.message)) {
+    fail(ReplayDiagnosticStage::ledger,
+         ReplayDiagnosticReason::ledger_nonfinite);
     return result;
   }
   for (int j = 0; j < num_constituents; ++j) {
@@ -817,15 +922,23 @@ AdvanceResult advance_forward_euler(const State &initial,
                      -result.diagnostics.clipping_ledger_delta[j],
                      operator_delta)) {
       result.message = "Forward Euler ledger diagnostic overflowed";
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     result.diagnostics.total_ledger_delta[j] = total_delta;
     result.diagnostics.operator_ledger_delta[j] = operator_delta;
+    if (detail != nullptr) {
+      detail->total_ledger_valid[j] = true;
+      detail->operator_ledger_valid[j] = true;
+    }
     Real normalized = 0;
     if (!normalized_ledger_delta(result.diagnostics.initial_ledger[j],
                                  operator_delta, normalized)) {
       result.message =
           "Forward Euler aerosol ledger normalization is nonfinite";
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     result.diagnostics.max_normalized_ledger_error =
@@ -836,6 +949,8 @@ AdvanceResult advance_forward_euler(const State &initial,
       result.diagnostics.normalized_physical_residual;
   if (!std::isfinite(result.diagnostics.normalized_residual)) {
     result.message = "Forward Euler normalized residual is nonfinite";
+    fail(ReplayDiagnosticStage::physical_residual,
+         ReplayDiagnosticReason::physical_residual_nonfinite);
     return result;
   }
   result.diagnostics.solution_minimum = result.diagnostics.raw_minimum;
@@ -853,6 +968,17 @@ AdvanceResult advance_forward_euler(const State &initial,
     result.message = "Forward Euler aerosol ledger error exceeds tolerance";
   } else {
     result.message = "ok";
+  }
+  if (detail != nullptr) {
+    if (result.ok) {
+      detail->status = ReplayDiagnosticStatus::complete;
+    } else if (result.diagnostics.normalized_residual > 1e-11) {
+      fail(ReplayDiagnosticStage::physical_residual,
+           ReplayDiagnosticReason::physical_residual_exceeded);
+    } else {
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_mismatch);
+    }
   }
   return result;
 }

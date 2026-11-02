@@ -73,6 +73,54 @@ target_include_directories(
 configure_ndrop_target(test_benchmark_support)
 add_test(NAME ndrop_benchmark_support COMMAND test_benchmark_support)
 
+# OI-5 offline unit tests use synthetic/repository inputs and never invoke a
+# production capture or the timed benchmark executable.
+add_executable(test_ndrop_replay_schema ndrop_integrator.cpp ndrop_replay_schema.cpp
+               test_ndrop_replay_schema.cpp)
+configure_ndrop_target(test_ndrop_replay_schema)
+add_test(NAME ndrop_oi5_schema COMMAND test_ndrop_replay_schema)
+
+add_executable(test_ndrop_production_replay ndrop_integrator.cpp ndrop_imex.cpp
+               ndrop_backward_euler.cpp ndrop_reference.cpp
+               ndrop_production_replay.cpp ndrop_replay_schema.cpp
+               test_ndrop_production_replay.cpp)
+target_include_directories(
+  test_ndrop_production_replay SYSTEM PRIVATE
+  "${EKAT_SOURCE}/src/algorithm"
+  "${EKAT_SOURCE}/src/core"
+  "${EKAT_SOURCE}/src/kokkos"
+  "${EKAT_SOURCE}/src/pack")
+configure_ndrop_target(test_ndrop_production_replay)
+add_test(NAME ndrop_oi5_production_replay_unit
+         COMMAND test_ndrop_production_replay)
+
+set(NDROP_OI5_BASELINE_DIR "" CACHE PATH
+    "Exact pre-change offline source copy for OI-5 comparison")
+if(NDROP_OI5_BASELINE_DIR)
+  foreach(_file ndrop_integrator.hpp ndrop_integrator.cpp ndrop_imex.cpp
+                ndrop_backward_euler.cpp ndrop_reference.cpp)
+    if(NOT EXISTS "${NDROP_OI5_BASELINE_DIR}/${_file}")
+      message(FATAL_ERROR "OI-5 baseline is missing ${_file}")
+    endif()
+  endforeach()
+  add_executable(test_ndrop_oi5_legacy_baseline
+                 "${NDROP_OI5_BASELINE_DIR}/ndrop_integrator.cpp"
+                 "${NDROP_OI5_BASELINE_DIR}/ndrop_imex.cpp"
+                 "${NDROP_OI5_BASELINE_DIR}/ndrop_backward_euler.cpp"
+                 "${NDROP_OI5_BASELINE_DIR}/ndrop_reference.cpp"
+                 test_ndrop_production_replay.cpp)
+  target_compile_definitions(test_ndrop_oi5_legacy_baseline PRIVATE
+      NDROP_LEGACY_BASELINE
+      NDROP_LEGACY_BASELINE_HEADER="${NDROP_OI5_BASELINE_DIR}/ndrop_integrator.hpp")
+  target_include_directories(
+    test_ndrop_oi5_legacy_baseline SYSTEM PRIVATE
+    "${EKAT_SOURCE}/src/algorithm"
+    "${EKAT_SOURCE}/src/core"
+    "${EKAT_SOURCE}/src/kokkos"
+    "${EKAT_SOURCE}/src/pack")
+  configure_ndrop_target(test_ndrop_oi5_legacy_baseline)
+endif()
+
 add_executable(benchmark_ndrop_integrators ndrop_integrator.cpp
                ndrop_imex.cpp ndrop_backward_euler.cpp ndrop_benchmark.cpp
                benchmark_ndrop_integrators.cpp)
@@ -83,6 +131,27 @@ target_include_directories(
   "${EKAT_SOURCE}/src/kokkos"
   "${EKAT_SOURCE}/src/pack")
 configure_ndrop_target(benchmark_ndrop_integrators)
+
+# Separate accuracy-first study. It is never registered as a CTest test: CTest
+# may run numerical unit tests, but must not accidentally start a timed study.
+add_executable(benchmark_ndrop_matched_error ndrop_integrator.cpp
+               ndrop_imex.cpp ndrop_backward_euler.cpp ndrop_reference.cpp
+               ndrop_benchmark.cpp benchmark_ndrop_matched_error.cpp)
+target_include_directories(
+  benchmark_ndrop_matched_error SYSTEM PRIVATE
+  "${EKAT_SOURCE}/src/algorithm"
+  "${EKAT_SOURCE}/src/core"
+  "${EKAT_SOURCE}/src/kokkos"
+  "${EKAT_SOURCE}/src/pack")
+configure_ndrop_target(benchmark_ndrop_matched_error)
+add_test(NAME ndrop_controlled_mixing_fixtures
+         COMMAND benchmark_ndrop_matched_error --check-controlled-mixing-fixtures)
+add_test(NAME ndrop_physical_column_fixtures
+         COMMAND benchmark_ndrop_matched_error --check-physical-column-fixtures
+                 --physical-grid-dir "${E3SM_SOURCE_ROOT}/components/homme/test/vcoord")
+add_test(NAME ndrop_physical_geometry_fixtures
+         COMMAND benchmark_ndrop_matched_error --check-physical-geometry-fixtures
+                 --physical-grid-dir "${E3SM_SOURCE_ROOT}/components/homme/test/vcoord")
 add_test(
   NAME ndrop_benchmark_smoke
   COMMAND benchmark_ndrop_integrators --smoke --output

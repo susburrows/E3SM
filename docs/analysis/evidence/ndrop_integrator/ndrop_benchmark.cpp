@@ -315,4 +315,13 @@ RichardsonErrors richardson_errors(const State &coarse, const State &refined,
   return result;
 }
 
+ReferenceErrors reference_errors(const State &candidate,
+                                 const State &reference,
+                                 const State &initial,
+                                 const std::vector<Real> &weights) {
+  // The fieldwise algebra is shared; here the second state is the independent
+  // DOPRI54 reference, so its norms are the approved reference denominators.
+  return richardson_errors(candidate, reference, initial, weights);
+}
+
 } // namespace ndrop_test::benchmark

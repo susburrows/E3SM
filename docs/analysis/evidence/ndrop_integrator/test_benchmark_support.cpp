@@ -334,6 +334,11 @@ void test_statistics_and_accounting() {
   check(richardson.weighted_l1_by_field[1] == 0 &&
             richardson.linf_by_field[50] == 0,
         "Richardson field ordering retains zero unchanged aerosol fields");
+  const auto reference = ndrop_test::benchmark::reference_errors(
+      richardson_coarse, richardson_refined, richardson_initial, {1, 3});
+  check(reference.screening_error == 0.5 &&
+            reference.weighted_l1_by_field[0] == 0.5,
+        "candidate-reference errors use the independent reference denominator");
 
   bool bad_richardson_rejected = false;
   try {
@@ -371,6 +376,130 @@ void test_statistics_and_accounting() {
         "a state mismatch never passes timing-path equivalence");
 }
 
+void test_implicit_intervals() {
+  const State initial = make_state();
+  const OperatorData op = make_operator();
+  constexpr Real total_dt = 0.5;
+  for (const auto &method : {ndrop_test::benchmark::Method::imex,
+                             ndrop_test::benchmark::Method::backward_euler}) {
+    const std::string name =
+        ndrop_test::benchmark::method_name(method);
+    const auto single = [&](const State &state, const Real dt,
+                            const AdvanceControl &control) {
+      return method == ndrop_test::benchmark::Method::imex
+                 ? ndrop_test::advance_imex(state, op, dt, control)
+                 : ndrop_test::advance_backward_euler(state, op, dt, control);
+    };
+    const auto interval = [&](const int substeps,
+                              const AdvanceControl &control) {
+      return method == ndrop_test::benchmark::Method::imex
+                 ? ndrop_test::advance_imex_interval(initial, op, total_dt,
+                                                     substeps, control)
+                 : ndrop_test::advance_backward_euler_interval(
+                       initial, op, total_dt, substeps, control);
+    };
+    const auto existing = single(initial, total_dt, AdvanceControl{});
+    const auto one = interval(1, AdvanceControl{});
+    check(existing.ok && one.ok &&
+              state_bitwise_equal(existing.state, one.state) &&
+              existing.message == one.message &&
+              existing.diagnostics.block_rhs_solve_count ==
+                  one.diagnostics.block_rhs_solve_count,
+          name + " interval N=1 preserves the existing solve");
+
+    for (const int substeps : {2, 3}) {
+      AdvanceControl detailed_control;
+      detailed_control.collect_replay_diagnostics = true;
+      const auto completed = interval(substeps, detailed_control);
+      AdvanceControl lean;
+      lean.collect_detailed_diagnostics = false;
+      const auto timed_path = interval(substeps, lean);
+      check(completed.ok && timed_path.ok &&
+                state_bitwise_equal(completed.state, timed_path.state) &&
+                completed.diagnostics.nsubmix == substeps,
+            name + " interval diagnostics do not change state");
+      const auto &detail = completed.diagnostics.replay_detail;
+      check(detail && detail->expected_substeps ==
+                          static_cast<std::uint32_t>(substeps) &&
+                detail->completed_substeps ==
+                    static_cast<std::uint32_t>(substeps) &&
+                detail->physical_residual[0] &&
+                detail->physical_residual[0]->substep <
+                    static_cast<std::uint32_t>(substeps),
+            name + " interval retains complete substep diagnostics");
+
+      State sequential = initial;
+      bool sequential_ok = true;
+      for (int step = 0; step < substeps; ++step) {
+        const auto next = single(sequential, total_dt / substeps,
+                                 AdvanceControl{});
+        sequential_ok = sequential_ok && next.ok;
+        sequential = next.state;
+      }
+      // This fixture has positive cloud at every level; its projection is a
+      // no-op, so independent one-step composition is a numerical oracle.
+      check(sequential_ok && state_bitwise_equal(completed.state, sequential),
+            name + " interval matches independently composed steps");
+    }
+
+    const auto invalid = interval(0, AdvanceControl{});
+    check(!invalid.ok && invalid.message == "substeps must be positive",
+          name + " rejects a zero internal count");
+
+    OperatorData masked = op;
+    masked.cloud_fraction[1] = 0;
+    const auto with_final_projection =
+        method == ndrop_test::benchmark::Method::imex
+            ? ndrop_test::advance_imex_interval(initial, masked, total_dt, 2)
+            : ndrop_test::advance_backward_euler_interval(initial, masked,
+                                                           total_dt, 2);
+    const auto first_projected =
+        method == ndrop_test::benchmark::Method::imex
+            ? ndrop_test::advance_imex(initial, masked, total_dt / 2)
+            : ndrop_test::advance_backward_euler(initial, masked,
+                                                 total_dt / 2);
+    check(with_final_projection.ok && first_projected.ok &&
+              first_projected.state.cloudborne[0][1] == 0,
+          name + " zero-cloud fixture reaches the post-integration reset");
+    if (with_final_projection.ok && first_projected.ok) {
+      const auto twice_projected =
+          method == ndrop_test::benchmark::Method::imex
+              ? ndrop_test::advance_imex(first_projected.state, masked,
+                                         total_dt / 2)
+              : ndrop_test::advance_backward_euler(
+                    first_projected.state, masked, total_dt / 2);
+      check(twice_projected.ok &&
+                !state_bitwise_equal(with_final_projection.state,
+                                     twice_projected.state),
+            name + " interval does not project at an internal step");
+    }
+  }
+}
+
+void test_controller_matched_forward_euler() {
+  const State initial = make_state();
+  OperatorData op(initial.nlev());
+  op.cloud_fraction = {0.8, 0.5, 0.7};
+  op.first_level_controller_rate = 4.5;
+  constexpr Real interval = 0.5;
+  const auto prepared = ndrop_test::prepare_operator(op);
+  const int controller_count =
+      ndrop_test::production_nsubmix(prepared, interval);
+  check(controller_count == 3,
+        "production controller supplies an exact non-dyadic FE count");
+
+  const auto adaptive = ndrop_test::advance_forward_euler(initial, op, interval);
+  ndrop_test::ForwardEulerOptions forced_options;
+  forced_options.forced_substeps = controller_count;
+  const auto forced = ndrop_test::advance_forward_euler(
+      initial, op, interval, forced_options);
+  check(adaptive.ok && forced.ok &&
+            adaptive.diagnostics.nsubmix == controller_count &&
+            forced.diagnostics.nsubmix == controller_count &&
+            state_bitwise_equal(adaptive.state, forced.state),
+        "adaptive FE executes the exact controller count without rounding");
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -391,6 +520,8 @@ int main(int argc, char **argv) {
               ndrop_test::advance_backward_euler);
   test_required_matrix();
   test_statistics_and_accounting();
+  test_implicit_intervals();
+  test_controller_matched_forward_euler();
   Kokkos::finalize();
   std::cout << "RESULT passed=" << passed << " failed=" << failed << '\n';
   return failed == 0 ? EXIT_SUCCESS : EXIT_FAILURE;

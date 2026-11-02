@@ -4,6 +4,212 @@ This directory contains test-only code for the approved standalone numerical
 experiment in `docs/design/eamxx_mam4xx_ndrop.md`. It is not linked into E3SM
 or MAM4xx production targets.
 
+## Physically scaled common-accuracy column extension
+
+### Natural-FE-accuracy comparison on the same physical columns
+
+The separate `ndrop_physical_controller_*_v1` workflow applies the existing
+controller-matched policy to unchanged fixtures 28--31. FE uses only its
+natural adaptive controller count (not accuracy-refined work). Its achieved
+maximum 51-field, both-norm, both-reference error defines each case's target;
+IMEX and BE select the first eligible positive integer count meeting it.
+This answers whether another method can match FE's baseline accuracy at lower
+cost, not whether that baseline accuracy is scientifically sufficient.
+
+Prepare and freeze untimed evidence in a new local scratch directory:
+
+```bash
+python3 -B ndrop_controller_matched_artifacts.py run-accuracy --physical-columns \
+  --source-root /path/to/E3SM --binary /path/to/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/accuracy
+python3 -B ndrop_controller_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/accuracy
+```
+
+The copied executable and four repository grids, design/source/build identity,
+physical metadata, complete lower-count searches, numerical gates, selection,
+and independent `N,2N,4N` timing-admission evidence are hash-bound. Failures
+remain visible; missing confirmations exclude timing without reselecting work.
+The earlier fixed-ceiling physical and controller-stratified synthetic studies
+are separate and unchanged. `mixing_scale` in this physical-controller CSV is
+background diffusivity [m2 s-1], not a dimensionless multiplier.
+
+Stop after reviewing the sealed selection. `run-timing` remains subject to
+separate explicit approval and uses only diagnostics-disabled complete
+advances plus required fences, ten warmups, 30--100 paired blocks and the
+unchanged stopping/bootstrap protocol. Synthetic timing fixtures in unit
+tests are not measured evidence. These columns remain idealized standalone
+shared-exchange operators; they neither resolve directional-rate production
+fidelity nor provide climatological weights or a production recommendation.
+
+### Paired high-work geometry sensitivity (untimed stage)
+
+The separately approved `--physical-geometry` policy includes native controls
+28--31 and eight conservative cloud-band subdivisions. Whole native cells
+intersecting 400--1000 m are split equally in log pressure; endpoints and the
+rest of the full column remain unchanged. The actual level counts are
+L72-derived 79/93 and L128-derived **141/167**, correcting the proposal's
+140/164 labels without changing its band predicate. These are prescribed-
+turbulence resolution sensitivities, not either model's current grid.
+
+Each mesh has identical moderate/strong initial state and geometry, with the
+existing K=3/30 m2/s, cloud-base wtke=0.3/1.0 m/s, 150 s interval and activation
+construction. Dry mass and all 51 parent-cell state integrals are conserved
+under subdivision. Cloud/droplet amounts are distributed by child cloudy mass
+with clear-child zeros; interstitial mixing ratios are copied. Refined state
+concentrations are conservative representations, not fresh point samples.
+All integrators, controller, accuracy and convergence gates are unchanged.
+
+```bash
+python3 -B ndrop_controller_matched_artifacts.py run-accuracy --physical-geometry \
+  --source-root /path/to/E3SM --binary /path/to/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/geometry-accuracy
+python3 -B ndrop_controller_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/geometry-accuracy
+```
+
+The separate closed `ndrop_physical_geometry_controller_*_v1` identity and CSV
+bind all 12 cases, parent grid and actual extents, subdivision and band,
+limiting-cell height/spacing and adjacent diffusivities/cloud-base predicates,
+natural FE counts, achieved errors, all lower implicit failures, references,
+copied input hashes and completion records. Numerical timing admission alone
+does not grant execution authority. The user separately approved one bounded
+local timing stage on 2026-10-12. Geometry `run-timing` and reporting require a
+hash-bound ordinary `timing_approval.json`, unchanged approved accuracy CSV,
+and freshly sealed selections from the exact timing binary. Missing or stale
+approval and execution records fail closed; a partial/previous timing attempt
+blocks another run in that directory. The scope and exact closed records are
+defined in the design document's bounded timing-stage subsection.
+Keep the native-only and prior synthetic artifacts separate. Neither tail
+counts nor an implicit advantage are guaranteed; do not tune inputs after
+selection. This does not resolve the deferred directional-rate representation.
+
+After the approved timing record is sealed, the bounded stage uses the same
+driver's `run-timing`, `report`, then `validate-final`. The geometry executable
+mode is `--physical-geometry-controller-timing`; ten warmups and 30--100 complete
+paired blocks use the existing 5% precision rule and 7200 s bound. Only the
+complete diagnostics-disabled advance plus required fence is measured. The
+distinct geometry analysis preserves actual/parent grid sizes, refinement
+and limiter metadata, all achieved errors, raw paired timings, fixed 10,000-
+resample ratio intervals, command/count evidence and final hashes. Its scope
+is unweighted local idealization, never production frequency or model speedup.
+
+### Existing fixed 1%/0.1% ceiling comparison
+
+`ndrop_matched_artifacts.py run-accuracy --physical` prepares four separate
+DYCOMS-inspired idealizations (fixtures 28--31): moderate/strong turbulence
+at repository L72/L128 nonuniform coordinate families and a common 150 s
+interval. It copies and hashes the exact `acme-72{i,m}.ascii` and
+`scream-128{i,m}.ascii` inputs before measurement. The design document's
+physical-column extension freezes the dimensional geometry/exchange recipe,
+600--840 m cloud layer, physically scaled modal mass/number inputs, prescribed
+activation fractions, and turbulence sensitivity values. Geometry is an
+explicit isothermal approximation; this is neither a complete DYCOMS sounding
+nor evidence that those turbulence profiles are observed climatologies.
+
+The natural adaptive FE baseline is retained separately. Common error ceilings
+are 1% and 0.1%, using the existing maximum of all 51 fieldwise normalized
+weighted-L1/L-infinity errors against both certified references. Every integer
+count is searched independently; FE starts at its controller-selected count.
+Larger FE counts are **accuracy-refined**, not production controller work.
+Selections are accuracy-only; `N,2N,4N` certification is required before timing.
+Missing/failed/non-decreasing confirmation withholds timing but remains visible
+in selection. All lower failures, both-reference errors, physical stiffness,
+limiting levels/spacings and exclusion reasons are retained.
+
+Example untimed workflow (new task-specific scratch paths required):
+
+```bash
+python3 -B ndrop_matched_artifacts.py run-accuracy --physical \
+  --source-root /path/to/E3SM --binary /path/to/build/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/<task>/accuracy
+python3 -B ndrop_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/<task>/accuracy
+python3 -B ndrop_matched_artifacts.py validate-accuracy \
+  --output-dir /Users/burr114/e3sm-scratch/<task>/accuracy
+```
+
+The untimed CTest `ndrop_physical_column_fixtures` checks repository-grid and
+paired-input fidelity, no-flux/clear-cell behavior, controller use, and bitwise
+diagnostics-on/off numerical states. Supply `NDROP_PHYSICAL_TEST_BINARY` to the
+Python unit suite to execute the additional grid corruption fixtures. Select
+numerical/support tests explicitly; do not run benchmark smoke tests through a
+blanket CTest invocation.
+
+After **separate timed-run approval**, the existing `run-timing`, `report` and
+`validate-final` commands recognize only hash-bound
+`ndrop_physical_column_*_v1` evidence. Timing includes the complete
+uninstrumented advance, uses adaptive FE for its baseline count and the existing
+forced-count test entry point only for refined FE, and preserves the existing
+complete paired-block/bootstrap protocol. No timing, speedup, production replay
+fidelity, climatological frequency or method recommendation follows from the
+untimed preparation. Old synthetic artifacts and production captures are not
+admitted or reinterpreted. The directional-rate representation issue remains
+deferred; no production source, numerical implementation, or dependency changes
+are part of this extension.
+
+## Controlled moderate/strong synthetic mixing extension
+
+The separately approved `controlled_mixing_v1` fixture policy adds four cases,
+without changing fixtures 0--23 or their artifacts:
+
+| ID | Levels | Mixing scale | Activation-input scale | Interval |
+|---:|---:|---:|---:|---:|
+| 24 | 72 | 0.05 (moderate) | 0.05 | 150 s |
+| 25 | 72 | 0.5 (strong) | 0.05 | 150 s |
+| 26 | 128 | 0.05 (moderate) | 0.05 | 150 s |
+| 27 | 128 | 0.5 (strong) | 0.05 | 150 s |
+
+Within each grid pair, the initial 51-field state, geometry, cloud fractions,
+and all modal number/mass activation inputs are identical. Activation arrays
+are copied from the existing moderate-scale generator; mixing exchanges and
+the controller-only first-level input use the case's mixing scale. Ordinary
+operator preparation and limiting still run. Unexpected limiting or changed
+prepared activation invalidates the fixture. These labels are synthetic,
+not calibrated atmospheric mixing regimes or production frequencies.
+
+FE executes its actual production-controller count, not a requested bin.
+Each case's certified FE error defines its own target. Consecutive IMEX/BE
+integer selection, the 8192 cap, two-reference check, numerical gates, and
+`N,2N,4N` timing admission are unchanged. Error matching is within each case;
+the targets can differ across mixing regimes. Side-by-side costs do not show
+a common-error cross-regime speedup or fieldwise dominance.
+
+Use a new unsynced scratch directory. The following commands perform only
+untimed accuracy/refinement and selection preparation, authorized separately
+from any timing pass (substitute the approved exact build/output paths):
+
+```bash
+python3 -B ndrop_controller_matched_artifacts.py run-accuracy \
+  --controlled-mixing --source-root /path/to/E3SM \
+  --binary /path/to/approved-build/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/accuracy
+python3 -B ndrop_controller_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/TASK/accuracy
+```
+
+This policy requires exactly `[24,25,26,27]`; partial or mixed populations
+are rejected. All eight artifact kinds use `ndrop_controlled_mixing_*_v1`,
+with a bound `fixture_policy` and `activation_mixing_scale=0.05`. Accuracy
+records add that column immediately after `mixing_scale`; analysis fixture
+entries retain it. The existing source/binary/dependency, completion/hash,
+selection, paired-block, timing-state-checksum, and exclusion checks apply.
+
+`ndrop_controlled_mixing_fixtures` is an untimed CTest entry invoking
+`--check-controlled-mixing-fixtures`; it checks fixed inputs, normal limiting,
+actual adaptive FE counts, and bitwise identical enabled/disabled diagnostic
+states for all methods. Select this and the numerical/support unit tests
+explicitly; do not run the benchmark smoke/exclusion tests inadvertently.
+Python corruption fixtures use fabricated values, not measured performance.
+
+Timing software supports this policy, but a timing run and its performance
+analysis require separate approval after the selection/admission artifacts
+validate. Only the complete uninstrumented advance may supply primary time,
+with ten warmups and 30--100 complete interleaved blocks. Report all three
+within-case paired time ratios, errors, counts, refinement evidence, and
+exclusions. No production replay, retained Task 5 access, remote/HPC work, or
+production/model-wide recommendation is authorized by this extension.
+
 ## Locked dependency workflow
 
 `dependency_lock.json` records two immutable stacks. `current` is the only
@@ -74,6 +280,112 @@ Use a release Kokkos build, `-DCMAKE_BUILD_TYPE=Release`, and
 `CMakeLists.txt` applies warnings-as-errors to all harness sources and registers
 the Forward Euler, IMEX, Backward Euler, common cross-scheme, and exact-current
 executables with CTest.
+
+## Separate synthetic matched-error interval study
+
+`benchmark_ndrop_matched_error` implements the 2026-10-07 standalone interval
+study. It shares the existing fixed synthetic generator, uses the independently
+assembled two-tolerance DOPRI54 reference to check the state actually timed,
+and lets FE, IMEX, and BE take different internal steps over one frozen ACI
+interval. Its artifact schemas are distinct from Task 5R and from production
+replay. Source with a dirty or attached HEAD is labeled exploratory; the tool
+does not promote that evidence to a retained result.
+
+The four fixtures are L72/L128 crossed with `(mixing_scale,T)=(0.05,50 s)`
+and `(0.5,150 s)`, with all 25 pairs nonzero. `run-accuracy` computes the
+dyadic ladder through 8192 without a timing pass. `freeze` verifies the exact
+matrix and fieldwise errors, chooses the least qualifying tested count for each
+method and tolerance, and writes a separate immutable selection. `run-timing`
+uses only those frozen configurations, with 10 warmups, 30--100 complete
+interleaved blocks, and a 7200 s study-wide cap. `report` validates completion
+records and computes paired-block bootstrap median-time ratios. A missing pair
+is reported as unavailable.
+
+Use a new local, unsynced scratch directory for each run. The commands below
+are illustrative; build and binary paths must name the exact optimized binary
+that passed the numerical suite, and the selected dependency checkouts must
+match the locked current stack:
+
+```bash
+cmake --build /Users/burr114/e3sm-scratch/ndrop-screening/build/release \
+  --parallel 4 --target benchmark_ndrop_matched_error test_cross_scheme \
+  test_benchmark_support
+python3 ndrop_matched_artifacts.py run-accuracy \
+  --source-root /path/to/E3SM \
+  --binary /Users/burr114/e3sm-scratch/ndrop-screening/build/release/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-screening/matched-error/RUN
+python3 ndrop_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-screening/matched-error/RUN
+python3 ndrop_matched_artifacts.py run-timing \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-screening/matched-error/RUN
+python3 ndrop_matched_artifacts.py report \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-screening/matched-error/RUN
+```
+
+Only the uninstrumented complete advance supplies primary timing. The
+independent reference and detailed validation work are outside the timed
+region. The direct comparison is conditional on these frozen synthetic
+operators; physical-column population, GPU, and whole-model conclusions need
+their separate evidence.
+
+### Production-controller-matched synthetic extension
+
+The separately versioned `ndrop_controller_matched_*_v1` study uses the exact
+substep count returned by the existing Forward Euler production controller as
+each fixture's baseline. Forward Euler runs through its adaptive entry point;
+IMEX and Backward Euler are restarted from the same state at consecutive
+integer counts and stop at the first numerically eligible result whose maximum
+two-reference field error is no greater than the Forward Euler error. The
+accuracy search streams results rather than retaining candidate states, and
+confirmation records at `2N` and `4N` cannot alter that selection. For the
+bounded pilot, all three methods retain these refinements. The separately
+hashed `timing_admission.json` withholds timing unless both aggregate norms
+strictly decrease against both references at `N,2N,4N`, with finite, eligible
+states throughout. Observed orders are reported without imposing another
+order window; formal first order remains the unchanged numerical-unit gate.
+Missing or failed refinements exclude a configuration, never select a new
+count, relax an error target, or redistribute a missing pair.
+
+The matrix contains the four earlier L72/L128 continuity fixtures and twenty
+unweighted controller-stratified synthetic fixtures targeting exact returned
+counts `1,2,4,8,16,32,64,128,256,512` at both level counts. It is a workload
+diagnostic, not a climatology or production-state sample. Accuracy and frozen
+selection are prepared before any timing authorization:
+
+`run-accuracy --fixtures 4,5,10,11,18,19,20,21` freezes a bounded subset at
+L72/L128 and exact controller counts 1, 8, 128, 256. Omit `--fixtures` for
+the complete 24-fixture matrix. These bins are weak/moderate/stiff synthetic
+workloads, not estimates of typical production counts. The 256 bin is
+deliberately constructed, not a search saturation or controller cap.
+
+```bash
+python3 ndrop_controller_matched_artifacts.py run-accuracy \
+  --source-root /path/to/E3SM \
+  --binary /path/to/optimized/benchmark_ndrop_matched_error \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-controller-matched/RUN
+python3 ndrop_controller_matched_artifacts.py freeze \
+  --output-dir /Users/burr114/e3sm-scratch/ndrop-controller-matched/RUN
+```
+
+Stop after inspecting the sealed accuracy and selection artifacts. A separate
+explicit approval is required before `run-timing`; neither the accuracy pass
+nor its selection authorizes a timed benchmark, performance analysis, or a
+production claim. When separately authorized, timing uses only the complete,
+uninstrumented advances already selected and the existing interleaved-block
+bootstrap protocol.
+
+Each analysis retains fixture/stiffness inputs, both reference error vectors
+in the hash-bound accuracy file, the self-check and tolerances, controller and
+implicit counts, refinement orders/admission exclusions, raw paired blocks,
+median times and all three paired time ratios with intervals. A ratio FE/IMEX
+greater than one means FE took more elapsed time at the declared maximum-field
+error target; matching this maximum does not imply fieldwise dominance.
+Ten warmups and 30--100 complete blocks are bound before timing. The stopping
+test runs between complete blocks, outside the complete-advance timer, and
+requires every timed method's median interval half-width below 5%; capped
+results retain their actual block counts and stop reason. These are local,
+exploratory CPU observations from synthetic frozen operators, not retained
+Task 5 evidence, production-replay validation, or a method recommendation.
 
 ## Task 5R paired evidence workflow
 

@@ -58,6 +58,15 @@ RichardsonErrors richardson_errors(const State &coarse, const State &refined,
                                    const State &initial,
                                    const std::vector<Real> &weights);
 
+// Same approved field norms, evaluated on the timed candidate and an
+// independently assembled reference state. The reference, not the candidate,
+// supplies the normalization denominator.
+using ReferenceErrors = RichardsonErrors;
+ReferenceErrors reference_errors(const State &candidate,
+                                 const State &reference,
+                                 const State &initial,
+                                 const std::vector<Real> &weights);
+
 } // namespace ndrop_test::benchmark
 
 #endif

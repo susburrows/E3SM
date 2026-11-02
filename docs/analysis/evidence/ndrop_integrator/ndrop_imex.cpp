@@ -92,11 +92,15 @@ void solve(const Matrix &matrix, View2D rhs) {
 }
 
 bool normalized_matrix_residual(const Matrix &matrix, const View2D &solution,
-                                const View2D &rhs, Real &normalized_max) {
+                                const View2D &rhs, Real &normalized_max,
+                                ReplayDiagnosticDetail *detail = nullptr,
+                                const bool cloud_system = false,
+                                const std::uint32_t substep = 0) {
   Real overall_max = 0;
   const int nlev = solution.extent_int(0);
   const int nrhs = solution.extent_int(1);
   for (int j = 0; j < nrhs; ++j) {
+    const int field = cloud_system ? (j == 0 ? 0 : 25 + j) : 1 + j;
     Real residual_max = 0;
     Real scale_max = 0;
     for (int k = 0; k < nlev; ++k) {
@@ -143,6 +147,7 @@ bool normalized_matrix_residual(const Matrix &matrix, const View2D &solution,
       scale += std::abs(scaled_rhs);
       if (!std::isfinite(applied) || !std::isfinite(residual) ||
           !std::isfinite(scale)) {
+        if (detail != nullptr) detail->matrix_residual[field].reset();
         return false;
       }
       residual_max = std::max(residual_max, residual);
@@ -151,7 +156,15 @@ bool normalized_matrix_residual(const Matrix &matrix, const View2D &solution,
     const Real normalized =
         scale_max > 0 ? residual_max / scale_max : residual_max;
     if (!std::isfinite(normalized)) {
+      if (detail != nullptr) detail->matrix_residual[field].reset();
       return false;
+    }
+    if (detail != nullptr) {
+      auto &maximum = detail->matrix_residual[field];
+      if (!maximum || normalized > maximum->normalized) {
+        maximum = ReplayResidualMaximum{residual_max, scale_max, normalized,
+                                        substep};
+      }
     }
     overall_max = std::max(overall_max, normalized);
   }
@@ -165,7 +178,10 @@ bool update_physical_residual(const std::vector<Real> &old,
                               const PreparedOperator &op, const Real dt,
                               const bool interstitial,
                               const std::vector<Real> *cloudborne,
-                              Real &overall_max) {
+                              Real &overall_max,
+                              ReplayDiagnosticDetail *detail = nullptr,
+                              const int field = 0,
+                              const std::uint32_t substep = 0) {
   Real residual_max = 0;
   Real scale_max = 0;
   for (std::size_t k = 0; k < op.nlev(); ++k) {
@@ -238,6 +254,13 @@ bool update_physical_residual(const std::vector<Real> &old,
     return false;
   }
   overall_max = std::max(overall_max, normalized);
+  if (detail != nullptr) {
+    auto &maximum = detail->physical_residual[field];
+    if (!maximum || normalized > maximum->normalized) {
+      maximum = ReplayResidualMaximum{residual_max, scale_max, normalized,
+                                      substep};
+    }
+  }
   return std::isfinite(overall_max);
 }
 
@@ -261,13 +284,17 @@ bool checked_difference(const Real lhs, const Real rhs, Real &difference) {
 void update_positivity(const std::vector<Real> &initial,
                        const std::vector<Real> &solution,
                        AdvanceDiagnostics &diagnostics,
-                       int &roundoff_count, int &material_count) {
+                       int &roundoff_count, int &material_count,
+                       Real *replay_field_minimum = nullptr) {
   Real scale = 0;
   for (const Real value : initial) {
     scale = std::max(scale, std::abs(value));
   }
   for (const Real value : solution) {
     scale = std::max(scale, std::abs(value));
+    if (replay_field_minimum != nullptr) {
+      *replay_field_minimum = std::min(*replay_field_minimum, value);
+    }
     diagnostics.solution_minimum =
         std::min(diagnostics.solution_minimum, value);
   }
@@ -292,20 +319,53 @@ void update_positivity(const std::vector<Real> &initial,
 
 AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                            const Real dt, const AdvanceControl &control) {
+  return advance_imex_interval(initial, data, dt, 1, control);
+}
+
+AdvanceResult advance_imex_interval(const State &initial,
+                                    const OperatorData &data,
+                                    const Real total_dt, const int substeps,
+                                    const AdvanceControl &control) {
   PhaseStopwatch stopwatch(control.phase_timings);
   stopwatch.phase(&AdvancePhaseTimings::setup);
   AdvanceResult result;
   result.state = State(initial.nlev());
-  if (!validate(initial, data, dt, result.message)) {
+  ReplayDiagnosticDetail *detail = nullptr;
+  if (control.collect_detailed_diagnostics &&
+      control.collect_replay_diagnostics) {
+    detail = &result.diagnostics.replay_detail.emplace();
+  }
+  const auto fail = [&](ReplayDiagnosticStage stage,
+                        ReplayDiagnosticReason reason) {
+    if (detail != nullptr) {
+      detail->failure_stage = stage;
+      detail->failure_reason = reason;
+    }
+  };
+  if (substeps <= 0 || !validate(initial, data, total_dt, result.message)) {
+    if (substeps <= 0) result.message = "substeps must be positive";
+    fail(ReplayDiagnosticStage::diagnostics,
+         ReplayDiagnosticReason::diagnostic_incomplete);
+    return result;
+  }
+  const Real dt = total_dt / substeps;
+  if (!(dt > 0) || !std::isfinite(dt)) {
+    result.message = "internal timestep must be finite and positive";
+    fail(ReplayDiagnosticStage::diagnostics,
+         ReplayDiagnosticReason::diagnostic_incomplete);
     return result;
   }
   const PreparedOperator op = prepare_operator(data);
   if (!finite_prepared_operator(op)) {
     result.message = "derived mixing rates must be finite";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
 
-  result.diagnostics.nsubmix = 1;
+  result.diagnostics.nsubmix = substeps;
+  if (detail != nullptr)
+    detail->expected_substeps = static_cast<std::uint32_t>(substeps);
   result.diagnostics.final_buffer = 0;
   result.diagnostics.activation_limiter_count =
       op.activation_limiter_count;
@@ -318,6 +378,8 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     if (!checked_column_ledgers(initial, op.pressure_weight,
                                 result.diagnostics.initial_ledger,
                                 result.message)) {
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     stopwatch.phase(&AdvancePhaseTimings::setup);
@@ -327,18 +389,27 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
   const Matrix interstitial = interstitial_matrix(op, dt);
   if (!finite_matrix(cloud) || !finite_matrix(interstitial)) {
     result.message = "IMEX matrix contains a nonfinite coefficient";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
-  const auto droplet_source = droplet_activation_source(initial, op);
+  State previous(substeps > 1 ? initial.nlev() : 0);
+  for (int step = 0; step < substeps; ++step) {
+  const State &old = step == 0 ? initial : previous;
+  const auto droplet_source = droplet_activation_source(old, op);
   if (!finite_values(droplet_source)) {
     result.message = "droplet activation source contains a nonfinite value";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
   std::array<std::vector<Real>, num_constituents> sources;
   for (int j = 0; j < num_constituents; ++j) {
-    sources[j] = aerosol_activation_source(initial, op, j);
+    sources[j] = aerosol_activation_source(old, op, j);
     if (!finite_values(sources[j])) {
       result.message = "aerosol activation source contains a nonfinite value";
+      fail(ReplayDiagnosticStage::assembly,
+           ReplayDiagnosticReason::assembly_nonfinite);
       return result;
     }
   }
@@ -347,14 +418,16 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
   View2D cloud_rhs("imex_cloud_rhs", op.nlev(), cloud_rhs_count);
   View2D cloud_rhs_original;
   for (std::size_t k = 0; k < op.nlev(); ++k) {
-    cloud_rhs(k, 0) = initial.droplet_number[k] + dt * droplet_source[k];
+    cloud_rhs(k, 0) = old.droplet_number[k] + dt * droplet_source[k];
     for (int j = 0; j < num_constituents; ++j) {
       cloud_rhs(k, j + 1) =
-          initial.cloudborne[j][k] + dt * sources[j][k];
+          old.cloudborne[j][k] + dt * sources[j][k];
     }
   }
   if (!finite_view(cloud_rhs)) {
     result.message = "IMEX cloud right-hand side contains a nonfinite value";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
   if (control.collect_detailed_diagnostics) {
@@ -365,21 +438,29 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     stopwatch.phase(&AdvancePhaseTimings::setup);
   }
   stopwatch.phase(&AdvancePhaseTimings::combined_factorization_solve);
+  if (detail != nullptr) detail->status = ReplayDiagnosticStatus::partial;
   solve(cloud, cloud_rhs);
   stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(cloud_rhs)) {
     result.message = "IMEX cloud solve produced a nonfinite value";
+    fail(ReplayDiagnosticStage::solve,
+         ReplayDiagnosticReason::solve_nonfinite);
     return result;
   }
   Real matrix_residual = 0;
   if (control.collect_detailed_diagnostics) {
     stopwatch.phase(&AdvancePhaseTimings::diagnostics);
     if (!normalized_matrix_residual(cloud, cloud_rhs, cloud_rhs_original,
-                                    matrix_residual)) {
+                                    matrix_residual, detail, true,
+                                    static_cast<std::uint32_t>(step))) {
       result.message = "IMEX cloud residual is nonfinite";
+      fail(ReplayDiagnosticStage::matrix_residual,
+           ReplayDiagnosticReason::matrix_residual_nonfinite);
       return result;
     }
-    result.diagnostics.normalized_matrix_residual = matrix_residual;
+    result.diagnostics.normalized_matrix_residual =
+        std::max(result.diagnostics.normalized_matrix_residual,
+                 matrix_residual);
     stopwatch.phase(&AdvancePhaseTimings::update);
   }
 
@@ -398,13 +479,15 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
         std::vector<Real>(op.nlev(), 0), result.state.cloudborne[j], op);
     for (std::size_t k = 0; k < op.nlev(); ++k) {
       interstitial_rhs(k, j) =
-          initial.interstitial[j][k] - dt * sources[j][k] +
+          old.interstitial[j][k] - dt * sources[j][k] +
           dt * return_and_mixing[k];
     }
   }
   if (!finite_view(interstitial_rhs)) {
     result.message =
         "IMEX interstitial right-hand side contains a nonfinite value";
+    fail(ReplayDiagnosticStage::assembly,
+         ReplayDiagnosticReason::assembly_nonfinite);
     return result;
   }
   if (control.collect_detailed_diagnostics) {
@@ -420,6 +503,8 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
   stopwatch.phase(&AdvancePhaseTimings::update);
   if (!finite_view(interstitial_rhs)) {
     result.message = "IMEX interstitial solve produced a nonfinite value";
+    fail(ReplayDiagnosticStage::solve,
+         ReplayDiagnosticReason::solve_nonfinite);
     return result;
   }
   if (control.collect_detailed_diagnostics) {
@@ -427,8 +512,11 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     matrix_residual = 0;
     if (!normalized_matrix_residual(interstitial, interstitial_rhs,
                                     interstitial_rhs_original,
-                                    matrix_residual)) {
+                                    matrix_residual, detail, false,
+                                    static_cast<std::uint32_t>(step))) {
       result.message = "IMEX interstitial residual is nonfinite";
+      fail(ReplayDiagnosticStage::matrix_residual,
+           ReplayDiagnosticReason::matrix_residual_nonfinite);
       return result;
     }
     result.diagnostics.normalized_matrix_residual =
@@ -442,62 +530,100 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     }
   }
 
-  update_positivity(initial.droplet_number, result.state.droplet_number,
+  update_positivity(old.droplet_number, result.state.droplet_number,
                     result.diagnostics,
                     result.diagnostics.droplet_roundoff_negative_count,
-                    result.diagnostics.droplet_material_negative_count);
+                    result.diagnostics.droplet_material_negative_count,
+                    detail != nullptr ? &result.diagnostics.droplet_raw_minimum
+                                      : nullptr);
+  if (detail != nullptr) {
+    detail->raw_minimum_valid[0] = true;
+    detail->negative_counts_valid[0] = true;
+  }
   for (int j = 0; j < num_constituents; ++j) {
-    update_positivity(initial.interstitial[j],
+    update_positivity(old.interstitial[j],
                       result.state.interstitial[j], result.diagnostics,
                       result.diagnostics.field_clipping[j]
                           .interstitial_roundoff_negative_count,
                       result.diagnostics.field_clipping[j]
-                          .interstitial_material_negative_count);
-    update_positivity(initial.cloudborne[j], result.state.cloudborne[j],
+                          .interstitial_material_negative_count,
+                      detail != nullptr
+                          ? &result.diagnostics.field_clipping[j]
+                                 .interstitial_raw_minimum
+                          : nullptr);
+    update_positivity(old.cloudborne[j], result.state.cloudborne[j],
                       result.diagnostics,
                       result.diagnostics.field_clipping[j]
                           .cloudborne_roundoff_negative_count,
                       result.diagnostics.field_clipping[j]
-                          .cloudborne_material_negative_count);
+                          .cloudborne_material_negative_count,
+                      detail != nullptr
+                          ? &result.diagnostics.field_clipping[j]
+                                 .cloudborne_raw_minimum
+                          : nullptr);
+    if (detail != nullptr) {
+      detail->raw_minimum_valid[1 + j] = true;
+      detail->raw_minimum_valid[26 + j] = true;
+      detail->negative_counts_valid[1 + j] = true;
+      detail->negative_counts_valid[26 + j] = true;
+    }
   }
+  if (detail != nullptr) ++detail->completed_substeps;
 
   if (control.collect_detailed_diagnostics) {
     stopwatch.phase(&AdvancePhaseTimings::diagnostics);
     Real physical_residual = 0;
     if (!update_physical_residual(
-            initial.droplet_number, result.state.droplet_number,
-            droplet_source, op, dt, false, nullptr, physical_residual)) {
+            old.droplet_number, result.state.droplet_number,
+            droplet_source, op, dt, false, nullptr, physical_residual,
+            detail, 0, static_cast<std::uint32_t>(step))) {
       result.message = "IMEX physical residual is nonfinite";
+      fail(ReplayDiagnosticStage::physical_residual,
+           ReplayDiagnosticReason::physical_residual_nonfinite);
       return result;
     }
     for (int j = 0; j < num_constituents; ++j) {
       if (!update_physical_residual(
-              initial.cloudborne[j], result.state.cloudborne[j], sources[j],
-              op, dt, false, nullptr, physical_residual) ||
+              old.cloudborne[j], result.state.cloudborne[j], sources[j],
+              op, dt, false, nullptr, physical_residual, detail, 26 + j,
+              static_cast<std::uint32_t>(step)) ||
           !update_physical_residual(
-              initial.interstitial[j], result.state.interstitial[j],
+              old.interstitial[j], result.state.interstitial[j],
               sources[j], op, dt, true, &result.state.cloudborne[j],
-              physical_residual)) {
+              physical_residual, detail, 1 + j,
+              static_cast<std::uint32_t>(step))) {
         result.message = "IMEX physical residual is nonfinite";
+        fail(ReplayDiagnosticStage::physical_residual,
+             ReplayDiagnosticReason::physical_residual_nonfinite);
         return result;
       }
     }
-    result.diagnostics.normalized_physical_residual = physical_residual;
+    result.diagnostics.normalized_physical_residual =
+        std::max(result.diagnostics.normalized_physical_residual,
+                 physical_residual);
     result.diagnostics.normalized_residual =
         std::max(result.diagnostics.normalized_matrix_residual,
                  result.diagnostics.normalized_physical_residual);
     if (!std::isfinite(result.diagnostics.normalized_residual)) {
       result.message = "IMEX normalized residual is nonfinite";
+      fail(ReplayDiagnosticStage::physical_residual,
+           ReplayDiagnosticReason::physical_residual_nonfinite);
       return result;
     }
     stopwatch.phase(&AdvancePhaseTimings::update);
   }
   if (result.diagnostics.positivity_failure) {
     result.message = "material negative value in IMEX solution";
+    fail(ReplayDiagnosticStage::raw_state,
+         ReplayDiagnosticReason::raw_material_negative);
     return result;
+  }
+  if (step + 1 < substeps) std::swap(previous, result.state);
   }
   if (!apply_zero_cloud_postprocess(result.state, data.cloud_fraction,
                                     result.message)) {
+    fail(ReplayDiagnosticStage::projection,
+         ReplayDiagnosticReason::projection_nonfinite);
     return result;
   }
   if (!control.collect_detailed_diagnostics) {
@@ -510,6 +636,8 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
   if (!checked_column_ledgers(result.state, op.pressure_weight,
                               result.diagnostics.final_ledger,
                               result.message)) {
+    fail(ReplayDiagnosticStage::ledger,
+         ReplayDiagnosticReason::ledger_nonfinite);
     return result;
   }
   for (int j = 0; j < num_constituents; ++j) {
@@ -522,14 +650,23 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                             result.diagnostics.clipping_ledger_delta[j],
                             operator_delta)) {
       result.message = "IMEX aerosol ledger decomposition is nonfinite";
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     result.diagnostics.total_ledger_delta[j] = total_delta;
     result.diagnostics.operator_ledger_delta[j] = operator_delta;
+    if (detail != nullptr) {
+      detail->clipping_ledger_valid[j] = true;
+      detail->total_ledger_valid[j] = true;
+      detail->operator_ledger_valid[j] = true;
+    }
     Real normalized = 0;
     if (!normalized_ledger_delta(result.diagnostics.initial_ledger[j],
                                  operator_delta, normalized)) {
       result.message = "IMEX aerosol ledger normalization is nonfinite";
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_nonfinite);
       return result;
     }
     result.diagnostics.max_normalized_ledger_error =
@@ -551,6 +688,21 @@ AdvanceResult advance_imex(const State &initial, const OperatorData &data,
     result.message = "IMEX aerosol ledger error exceeds tolerance";
   } else {
     result.message = "ok";
+  }
+  if (detail != nullptr) {
+    if (result.ok) {
+      detail->status = ReplayDiagnosticStatus::complete;
+    } else if (result.diagnostics.normalized_residual > 1e-11) {
+      fail(result.diagnostics.normalized_matrix_residual > 1e-11
+               ? ReplayDiagnosticStage::matrix_residual
+               : ReplayDiagnosticStage::physical_residual,
+           result.diagnostics.normalized_matrix_residual > 1e-11
+               ? ReplayDiagnosticReason::matrix_residual_exceeded
+               : ReplayDiagnosticReason::physical_residual_exceeded);
+    } else {
+      fail(ReplayDiagnosticStage::ledger,
+           ReplayDiagnosticReason::ledger_mismatch);
+    }
   }
   return result;
 }

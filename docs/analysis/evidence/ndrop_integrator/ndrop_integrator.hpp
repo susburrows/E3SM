@@ -3,7 +3,9 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -69,6 +71,44 @@ struct FieldClipping {
   int cloudborne_material_negative_count = 0;
 };
 
+enum class ReplayDiagnosticStatus : std::uint8_t {
+  not_started, partial, complete
+};
+enum class ReplayDiagnosticStage : std::uint8_t {
+  input, assembly, factorization, solve, raw_state, clipping, projection,
+  matrix_residual, physical_residual, ledger, boundary, branch, diagnostics
+};
+enum class ReplayDiagnosticReason : std::uint8_t {
+  input_nonfinite, assembly_nonfinite, factorization_unsafe_pivot,
+  factorization_nonfinite, solve_nonfinite, raw_material_negative,
+  raw_nonfinite, clipping_nonfinite, projection_nonfinite,
+  matrix_residual_nonfinite, matrix_residual_exceeded,
+  physical_residual_nonfinite, physical_residual_exceeded, ledger_nonfinite,
+  ledger_mismatch, boundary_mismatch, branch_mismatch, diagnostic_incomplete
+};
+struct ReplayResidualMaximum {
+  Real numerator = 0;
+  Real normalizer = 0;
+  Real normalized = 0;
+  std::uint32_t substep = 0;
+};
+struct ReplayDiagnosticDetail {
+  ReplayDiagnosticStatus status = ReplayDiagnosticStatus::not_started;
+  std::uint32_t expected_substeps = 0;
+  std::uint32_t completed_substeps = 0;
+  std::optional<ReplayDiagnosticStage> failure_stage;
+  std::optional<ReplayDiagnosticReason> failure_reason;
+  std::array<bool, 51> raw_minimum_valid{};
+  std::array<bool, 51> negative_counts_valid{};
+  std::array<bool, 51> fe_clipping_count_valid{};
+  std::array<bool, 51> fe_weighted_deficit_valid{};
+  std::array<bool, 25> total_ledger_valid{};
+  std::array<bool, 25> clipping_ledger_valid{};
+  std::array<bool, 25> operator_ledger_valid{};
+  std::array<std::optional<ReplayResidualMaximum>, 51> matrix_residual{};
+  std::array<std::optional<ReplayResidualMaximum>, 51> physical_residual{};
+};
+
 struct AdvanceDiagnostics {
   int nsubmix = 0;
   int final_buffer = 0;
@@ -102,6 +142,7 @@ struct AdvanceDiagnostics {
   std::array<Real, num_constituents> clipping_ledger_delta{};
   std::array<Real, num_constituents> total_ledger_delta{};
   std::array<Real, num_constituents> operator_ledger_delta{};
+  std::optional<ReplayDiagnosticDetail> replay_detail;
 };
 
 struct AdvanceResult {
@@ -132,6 +173,7 @@ struct AdvanceControl {
   // A nonnull pointer enables phase instrumentation in a matched diagnostic
   // pass. The uninstrumented path makes no steady-clock calls.
   AdvancePhaseTimings *phase_timings = nullptr;
+  bool collect_replay_diagnostics = false;
 };
 
 struct ReferenceOptions {
@@ -219,6 +261,14 @@ AdvanceResult advance_forward_euler(const State &initial,
 AdvanceResult advance_imex(const State &initial, const OperatorData &data,
                            Real dt, const AdvanceControl &control = {});
 
+// Standalone matched-error study: one frozen operator over the total ACI
+// interval, with substeps internal to the integrator. N=1 is the existing
+// advance. This does not change the production MAM4xx entry point.
+AdvanceResult advance_imex_interval(const State &initial,
+                                    const OperatorData &data, Real total_dt,
+                                    int substeps,
+                                    const AdvanceControl &control = {});
+
 // Test-only access to finite-value checkers whose failure branches cannot be
 // reached from a valid M-matrix and finite right-hand side.
 bool imex_nonfinite_probe_is_rejected(ImexFiniteProbe probe);
@@ -227,6 +277,10 @@ bool imex_nonfinite_probe_is_rejected(ImexFiniteProbe probe);
 AdvanceResult advance_backward_euler(const State &initial,
                                      const OperatorData &data, Real dt,
                                      const AdvanceControl &control = {});
+
+AdvanceResult advance_backward_euler_interval(
+    const State &initial, const OperatorData &data, Real total_dt,
+    int substeps, const AdvanceControl &control = {});
 
 // Test-only access to deterministic failure branches that cannot be reached
 // from a valid conservative M-matrix with finite nonnegative input.
