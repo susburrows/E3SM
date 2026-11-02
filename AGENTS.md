@@ -20,18 +20,6 @@ after running ./case.setup.
 Supported machines are in cime_config/machines/config_machines.xml and grouped by hostname.
 Do not try and create a case or test unless on a supported machine.
 
-### Local scratch and retained results
-
-Use task-specific worktrees and directories below
-`/Users/burr114/e3sm-scratch/` for temporary local E3SM dependency checkouts,
-builds, case directories, `EXEROOT`, `RUNDIR`, and other generated work. Do not
-place those trees in a cloud-synced source checkout or `/private/tmp` unless the
-user explicitly requests it.
-
-Write retained local E3SM results, evidence, and provenance below
-`/Users/burr114/e3sm-results/`, again in a task-specific subdirectory. Keep
-rebuildable objects in `e3sm-scratch` and durable evidence in `e3sm-results`.
-
 ```bash
 #list supported machines
 cd cime/scripts
@@ -39,13 +27,8 @@ cd cime/scripts
 ```
 
 ### Creating and Building a Case
-Ask the user to specify a CASENAME. If the source tree is in a cloud-synced path
-or if generated absolute paths may exceed 220 characters, create the case,
-EXEROOT, and RUNDIR in a short unsynced scratch path below
-`/Users/burr114/e3sm-scratch/`
-unless the user explicitly approves another location. Otherwise, create the case
-in the top-level project directory unless the case name includes an absolute or
-relative path.
+Ask the user to specify a CASENAME. Create the case in the top level project directory unless
+the case name includes a absolute or relative path.
 
 ```bash
 # Navigate to CIME scripts directory
