@@ -73,7 +73,7 @@ gate. No critical or major design finding remains for Task 3.
 | Retained bottom `S=a(I+C)` row | Bottom diagonal block inspection verifies `lambda-ha,-ha,ha,lambda+ha`; outside-branch probe fails deterministically. |
 | Explicit no-flux top and bottom | Shared interface endpoints are exactly zero; identity levels `1,2,3,127,128`, analytic no-flux modes, and zero-overlap mixing pass. The FE-only first-level controller has a bitwise no-effect BE test. |
 | Factor each distinct activation family once | Exact-coefficient grouping; a distinct-rate case reports eight factorizations for 25 aerosol right-hand sides, while an identical-rate case reports one. |
-| Host block Thomas with unsafe-pivot threshold | Reduced diagonal blocks are inverted with deterministic partial row selection; scalar pivots at or below `100*epsilon*||A||_infinity` fail. Near-threshold block and scalar probes pass. |
+| Host block Thomas with unsafe-pivot threshold | Reduced diagonal blocks are inverted with deterministic partial row selection; scalar pivots at or below `100*epsilon` times the infinity norm of `A` fail. Near-threshold block and scalar probes pass. |
 | Droplet solve after modal-number aerosol blocks | One scalar cloud matrix is factored once; its right-hand side uses the solved modal-number state. The dense oracle assembles its matrix and source separately. |
 | Raw positivity before zero-cloud projection | Per-field minima and roundoff/material counts are populated before isolated, contiguous, all-zero, and zero-overlap reset/resuspension cases. BE never clips. |
 | Signed total/clipping/operator ledgers | All 25 pairs report `clipping=0`, `operator=total`, and the approved relative or zero-ledger absolute normalization. |

@@ -52,7 +52,7 @@ used. The checked-in CMake driver configured and built without source edits.
 
 ## 2. Forward Euler gate
 
-### Methods assessment
+### Methods assessment (Forward Euler)
 
 The FE implementation is appropriate as the canonical reference for this
 study. It derives cell rates from shared physical-interface exchange
@@ -80,7 +80,7 @@ Its synthetic `mam_idx` is equivalent to the production mapping in
 `mam4::ndrop::get_e3sm_parameters`: mode ranges 0-7, 8-12, 13-20, and 21-24,
 with modal-number indices 0, 8, 13, and 21.
 
-### Results and realism assessment
+### Results and realism assessment (Forward Euler)
 
 Fresh debug/sanitized and optimized FE runs each reported:
 
@@ -108,7 +108,7 @@ capped activation removal does not exceed its associated interstitial inflow.
 The forced unstable step is therefore appropriately retained as a diagnostic
 test rather than represented as a production-adaptive physical case.
 
-### Validation evidence and harness/tests assessment
+### Validation evidence and harness/tests assessment (Forward Euler)
 
 The checked-in suite provides durable evidence for:
 
@@ -141,7 +141,7 @@ Reviewer-only checks strengthened this assessment:
 The CMake/CTest harness is concise, reproducible, warning-clean, and isolates
 all build products. Tests use deterministic states and a fixed random seed.
 
-### Identified issues or risks
+### Identified issues or risks (Forward Euler)
 
 No scoped FE implementation defect or gate-blocking validation-artifact
 deficiency was found. Residual limitations are:
@@ -153,7 +153,7 @@ deficiency was found. Residual limitations are:
 - the retained current-C++ bottom formula is an explicit scientific TODO, not
   evidence that the formula is physically intended.
 
-### Recommendation: PASS
+### Recommendation: PASS (Forward Euler)
 
 **Forward Euler gate: PASS.** The implementation reproduces the scoped current
 MAM4xx state transition exactly under safe boundaries, the convergence and
@@ -163,7 +163,7 @@ oracles are not merely restating the implementation.
 
 ## 3. IMEX gate
 
-### Methods assessment
+### Methods assessment (IMEX)
 
 The IMEX split matches the approved design. Activation is evaluated explicitly
 from the old state. Cloud-overlap-weighted mixing is implicit for cloud-borne
@@ -190,7 +190,7 @@ IMEX does not clip. Its positivity check is performed on the raw solved state
 before zero-cloud resuspension. Every negative is counted, while only values
 larger than the approved field-relative roundoff tolerance cause failure.
 
-### Results and realism assessment
+### Results and realism assessment (IMEX)
 
 Fresh debug/sanitized and optimized IMEX runs each reported:
 
@@ -212,7 +212,7 @@ checks the exact limiter count, and compares droplet and all 25 aerosol pairs
 against direct 2-by-2 solves. Material-negative and tiny-scale material-
 negative cases both fail without clipping, as required.
 
-### Validation evidence and harness/tests assessment
+### Validation evidence and harness/tests assessment (IMEX)
 
 The checked-in suite covers identity, uniform-state preservation, fractional
 overlap, randomized compatible columns, zero-cloud transitions, matrix and
@@ -247,7 +247,7 @@ The shared CMake/CTest harness is reproducible and maintainable for this local
 screening scope. EKAT and Kokkos headers are external system includes, while
 all harness translation units retain strict warnings-as-errors.
 
-### Identified issues or risks
+### Identified issues or risks (IMEX)
 
 No scoped IMEX implementation defect or gate-blocking validation-artifact
 deficiency was found. Residual limitations are:
@@ -262,7 +262,7 @@ deficiency was found. Residual limitations are:
 - production integration, data layout, batching, and synchronization costs are
   outside this gate.
 
-### Recommendation: PASS
+### Recommendation: PASS (IMEX)
 
 **IMEX gate: PASS.** The split, matrix assembly, solve order, physical residual,
 ledger, positivity policy, and first-order results are consistent with the
