@@ -6616,6 +6616,578 @@ allowlist is authorized. No implementation occurs in this status-recording
 revision, and production-source or execution work remains blocked by every
 subsequent state-machine approval and evidence gate.
 
+## Production Implicit Vertical-Mixing Option (IMEX and Backward Euler; design gate)
+
+> **[PRODUCTION_DESIGN_PENDING - prepared 2026-11-02]** This section is the
+> separate production design and review gate required by the Phase 0 statement
+> above ("Any future production implementation of IMEX or Backward Euler must
+> reference this design and the Isolated `ndrop` Integrator Validation and
+> Performance Plan and must pass a separate production design and review gate
+> before entering an EAMxx or MAM4xx production path"). It is a document-only
+> proposal. It grants no implementation, production-source edit, submodule or
+> gitlink change, HPC command, commit, or push authority. Approval is recorded
+> by the owner as a hash-bound Revision History entry. The document-level
+> status classes, the Production-State Replay state machine, and every earlier
+> approval boundary are unchanged by this section.
+
+### Scope, target revisions, and exclusions
+
+Owner decisions recorded 2026-11-02: implement **both** IMEX-Euler and Backward
+Euler (BE) as runtime-selectable alternatives to the explicit vertical-mixing
+substep loop in MAM4xx `dropmixnuc`; implement **two** implicit substep
+policies (reuse the Forward Euler controller count; a single implicit step per
+ACI interval); and, after implementation, benchmark every configuration on
+accuracy and cost in the EAMxx process tests on GPU and in a full production
+configuration. Forward Euler (FE) remains the bit-for-bit default.
+
+Target revisions. The E3SM submodule `externals/mam4xx` points at
+`E3SM-Project/mam4xx` commit `45a31e3f`, whose `src/mam4xx/ndrop.hpp` is
+byte-identical to that repository's current `main` (both fetched 2026-11-02).
+All `ndrop.hpp` line anchors below refer to `45a31e3f`. The locked harness
+checkout `0d076d8e` differs only by exposing `nsubmix` unconditionally; at
+`45a31e3f` the `int &nsubmix` parameter of `update_from_explmix` and
+`dropmixnuc` exists only under `#ifdef MAM4XX_EVAL_DIAGNOSTICS` (L1071-1073,
+L1301-1303, L1513-1515). This design does not depend on that parameter. The
+two implementation deliverables are a MAM4xx pull request against
+`E3SM-Project/mam4xx` `main` and a paired E3SM pull request against
+`E3SM-Project/E3SM` `master`.
+
+Exclusions. No change to `update_from_newcld`, `update_from_cldn_profile`, ARG
+activation, the explicit stability controller, the `enable_aero_vertical_mix`
+semantics (the unused unnamed `const bool &` at L1294 is neither renamed nor
+used), the zero-cloud reset, or any downstream tendency. No higher-order
+implicit method, SUNDIALS, or PETSc. No change to the standalone harness
+contracts above.
+
+Evidence limits, stated for the approver:
+
+- The harness matched-error timings (serial CPU) selected IMEX and BE substep
+  counts to meet FE's achieved error. No configuration proposed here reproduces
+  that selection, so the 8-40% IMEX saving is not a prediction for any
+  benchmarked row.
+- In most harness cases IMEX used the same substep count as FE (1/1/1, 5/5/5,
+  10/10/10, 89/89/90) and was still 10-22% cheaper, so the saving arose mainly
+  from lower per-substep cost. The controller-count rows below are the direct
+  GPU test of that per-substep claim under production synchronization costs
+  and may come out either way.
+- The single-step rows test the step-reduction limit and carry no accuracy or
+  positivity evidence; the matched-error studies never ran a single implicit
+  step over the ACI interval.
+- The harness FE is an exact-agreement reimplementation, not the production
+  kernel; its per-substep cost is not production FE cost.
+
+### Production operator and notation
+
+Active levels are `k` in `[top_lev, pver-1]` with `kp1 = min(k+1, pver-1)` and
+`km1 = max(k-1, top_lev)`. The symbols below name production quantities
+exactly as `update_from_explmix` forms them (L1118-1152):
+
+| Symbol | Production quantity | Anchor |
+|---|---|---|
+| `b_k` | `eddy_diff_kp(k) = zn(k)*eddy_diff(k)*csbot(k)*zs(k)`, rate toward `k+1` [s^-1] | L1121 |
+| `a_k` | `eddy_diff_km(k) = zn(k)*eddy_diff(km1)*csbot(km1)*zs(km1)`, rate toward `k-1` [s^-1] | L1123 |
+| `oB_k`, `oA_k` | `overlapp(k)`, `overlapm(k)`; `min(cldn(k)/cldn(nbr), 1)` when `cldn(nbr) > 1e-10`, else 1 | L1086, L1104-1118 |
+| `w_k` | `pdel_k/g = 1/zn(k)` [kg m^-2], since `zn(k) = gravity*rpdel(k)` | L1398 |
+| `act_k^{num,m}`, `act_k^{mass,m}` | `nact(k,m)`, `mact(k,m)` after the in-place cap `min(., eddy_diff_kp(k))` | L1134-1135 |
+| `S_{j,k}` | `act_k I_{j,k+1}` for `k < pver-1`; droplet source `sum_m nact(k,m) I_{num_m,k+1}` | L1205-1206, L1230-1241 |
+| `h` | substep length `dtmix` | L1157-1164 |
+| `L_j` | ledger `sum_k w_k (I_{j,k} + C_{j,k})` of constituent `j` | - |
+
+The explicit update is `explmix` overload A for cloud-borne species and droplet
+number (L996-1003) and overload B for interstitial species (L1038-1047):
+
+\[
+C_k^{n+1}=\max\!\left(0,\;C_k^n+h\left[S_k+b_k\,(oB_k\,C_{k+1}^n-C_k^n)
++a_k\,(oA_k\,C_{k-1}^n-C_k^n)\right]\right),
+\]
+
+\[
+I_k^{n+1}=\max\!\left(0,\;I_k^n+h\left[-S_k+b_k\,(I_{k+1}^n-I_k^n
++(1-oB_k)\,C_{k+1}^n)+a_k\,(I_{k-1}^n-I_k^n+(1-oA_k)\,C_{k-1}^n)\right]\right).
+\]
+
+Controller and loop protocol (unchanged by this design). One
+`parallel_reduce` over `TeamVectorRange(team, top_lev, pver)` forms the
+overlaps, `b_k`, `a_k`, applies the cap, and reduces `dtmin = min_k 1/tinv_k`
+over levels with `tinv_k = a_k + b_k > 1e-6` (L1104-1152). Then
+`dtmix = 0.9*dtmin`, `nsubmix = dtmicro/dtmix + 1`, `dtmix = dtmicro/nsubmix`
+(L1157-1164). The substep loop (L1174-1257) swaps `nsav` and `nnew` at the top
+of every iteration after the first (L1176-1181), copies `qncld(k) = qcld(k)`
+(L1182-1183), reads only the `nsav` buffer, writes only the `nnew` buffer, and
+updates `qcld` in place. The zero-cloud reset runs once after the loop
+(L1259-1281). `nact`, `mact`, and `eddy_diff` are fixed through all substeps.
+
+Boundary facts. In `dropmixnuc`, `nact` and `mact` are zeroed (L1392-1393),
+`eddy_diff(k)` is clamped to `[0.01, 100]` m^2 s^-1 for `k < pver-1` (L1410) and
+set to zero at the surface cell (L1420), and `update_from_cldn_profile` is
+called only for `k < pver-1` (L1478-1489). Therefore `b_{pver-1} = 0`, the cap
+gives `act_{pver-1} = 0`, and the bottom `max(0, tmpa)` source (L1207-1213,
+L1237-1240) is dead in the full path; it is live only in standalone
+`update_from_explmix` tests. At `k = top_lev`, `km1 = k` and `oA_k = 1`
+exactly, so the `a_k` update term vanishes identically while `a_k` still enters
+`tinv_k`; this is the first-active-level controller term defined above and it
+never enters a matrix (`a_{top} = 0` in every matrix below). At cloud base,
+`update_from_cldn_profile` replaces the interface diffusivity by
+`eddy_diff = wtke/zs` (L743), unbounded by the clamp, with
+`wtke >= wmixmin = 0.1` m s^-1 (L1399).
+
+Conservation identity. Because `zn = g*rpdel`, in exact arithmetic
+
+\[
+w_k\,b_k=\mathrm{eddy\_diff}(k)\,\mathrm{csbot}(k)\,z_s(k)=w_{k+1}\,a_{k+1},
+\]
+
+so interface exchanges are paired and `L_j` is invariant under mixing, overlap
+return, and activation transfer before clipping. The cloud-base override
+replaces the single interface value before Part III, so the identity holds
+there too.
+
+Preconditions for the implicit integrators: finite input (checked once per
+call; a nonfinite input is an unrecoverable error, see the acceptance checks),
+`act_k >= 0`, and `act_{pver-1} = 0`. The last two are structural in
+`dropmixnuc`; a standalone `update_from_explmix` call violating them records a
+status failure and takes the FE path. Negative input entries are not
+pre-checked, only counted: the ACI preprocess floors interstitial aerosol but
+not cloud-borne `qqcw`, and FE clips such inputs silently. No bound on the
+output negativity produced by negative inputs is assumed for either method;
+the candidate output is judged by the conservation-budget check below, and
+`input_negative_count` attributes the cause.
+
+### IMEX-Euler on the production stencil
+
+Activation is explicit from the old state; mixing and cloud-to-interstitial
+return are implicit. Per substep, for each constituent `j`:
+
+\[
+(1+h(a_k+b_k))\,C_k^{n+1}-h\,a_k\,oA_k\,C_{k-1}^{n+1}-h\,b_k\,oB_k\,C_{k+1}^{n+1}
+=C_k^n+h\,S_k(I^n),
+\]
+
+\[
+(1+h(a_k+b_k))\,I_k^{n+1}-h\,a_k\,I_{k-1}^{n+1}-h\,b_k\,I_{k+1}^{n+1}
+=I_k^n-h\,S_k(I^n)+h\left[a_k(1-oA_k)\,C_{k-1}^{n+1}+b_k(1-oB_k)\,C_{k+1}^{n+1}\right].
+\]
+
+The cloud-borne and droplet fields share the scalar tridiagonal family `A_C`
+(26 right-hand sides); the interstitial fields share `A_I` (25 right-hand
+sides). Solve `A_C` first, assemble the interstitial right-hand side with the
+solved `C^{n+1}`, then solve `A_I`. This is the IMEX definition above with
+`d^{\uparrow}=a_k`, `d^{\downarrow}=b_k`, and the harness `ndrop_imex.cpp`
+assembly. The weighted column sums of `A_C` leave exactly the `(1-o)` remainders
+that the interstitial right-hand side receives at `C^{n+1}`, so the substep is
+exactly conservative in `L_j`.
+
+Positivity is not guaranteed. In FE overload B the coefficient of `I_{k+1}^n`
+is `h(b_k-act_k) >= 0` under the cap. IMEX moves `h b_k I_{k+1}` to the
+implicit side, so the right-hand-side entry `I_k^n - h act_k I_{k+1}^n` can be
+negative. The consequence is analyzed under "IMEX positivity" below.
+
+### Backward Euler on the production stencil
+
+All terms are at the new time level. With block unknown `x_k = (C_k, I_k)^T`,
+`lambda_k = 1 + h(a_k + b_k)`, and the blocks of the implicit-rows section
+above evaluated with `d^{\uparrow}=a_k`, `d^{\downarrow}=b_k`:
+
+\[
+L_k=-h\,a_k\begin{bmatrix}oA_k&0\\1-oA_k&1\end{bmatrix},\qquad
+B_k=\lambda_k I_2,\qquad
+U_k=\begin{bmatrix}-h\,b_k\,oB_k&-h\,act_k\\-h\,b_k(1-oB_k)&-h\,b_k+h\,act_k\end{bmatrix},
+\]
+
+with `L_{top} = 0` (controller term excluded) and `U_{pver-1} = 0` (since
+`b_{pver-1} = 0`). The bottom block is `lambda_{pver-1} I_2` because
+`act_{pver-1} = 0`; no linear bottom branch is designed.
+
+Positivity, conservation, and pivot safety. The cap and `act_k >= 0` make every
+off-diagonal entry nonpositive (`-h(b_k-act_k) <= 0`), so `A` is a Z-matrix.
+Row diagonal dominance fails in interstitial rows for large `h` with overlap
+below one, so the M-matrix property is established by weighted column
+dominance. Give both components of block `k` the weight `w_k`. The cloud-borne
+column of block `k` sums to
+
+\[
+w_k\lambda_k-w_{k+1}h\,a_{k+1}\left[oA_{k+1}+(1-oA_{k+1})\right]
+-w_{k-1}h\,b_{k-1}\left[oB_{k-1}+(1-oB_{k-1})\right]=w_k,
+\]
+
+and the interstitial column of block `k` sums to
+
+\[
+w_k\lambda_k-w_{k+1}h\,a_{k+1}+w_{k-1}\left[-h\,act_{k-1}-h\,b_{k-1}+h\,act_{k-1}\right]=w_k,
+\]
+
+both using `w_{k+1}a_{k+1}=w_k b_k` and `w_{k-1}b_{k-1}=w_k a_k`, with
+`a_{top}=0`, `b_{pver-1}=0`, and `act_{pver-1}=0` at the ends. Hence
+`A^T w = w` with `w > 0`: `A` is a nonsingular M-matrix, `A^{-1} >= 0`, the
+solution of a nonnegative right-hand side is nonnegative, and
+`w^T x^{n+1} = w^T A x^{n+1} = w^T x^n` is exactly the ledger conservation of
+`L_j`. Leading Schur complements inherit `w_2^T S >= w_2^T` because
+`A_{11}^{-1} >= 0` and `A_{12} <= 0`, so every 2-by-2 block-Thomas pivot `D_k`
+satisfies `d_{11} >= 1 + |d_{21}|` and `d_{22} >= 1 + |d_{12}|`, hence
+`det D_k >= 1` in the `B_k = lambda_k I_2` normalization, independent of `h`.
+This exact-arithmetic margin motivates but does not replace a guard: finite
+coefficients can erode the diagonal margin and the determinant can cancel. The
+block factorization therefore keeps the harness's guarded form: a pivot block
+is accepted only if it is finite and `|det D_k| > 100 epsilon ||D_k||_infty^2`;
+otherwise a solver-failure flag is set and the substep is rejected through the
+fallback path below. The scalar EKAT solves (`A_C`, `A_I`) are strictly row
+diagonally dominant with unit diagonal margin, for which Thomas elimination
+without pivoting is backward stable; their outputs are covered by the
+candidate finiteness check. The supported coefficient range is
+`0 <= h a_k, h b_k <= 500`, `0 <= oA_k, oB_k <= 1`, `0 <= act_k <= b_k`, and
+`nlev <= 128`; the unit tests verify solve residuals against the dense oracle
+across that range, including `h max_k tinv_k = 450` and the cap binding.
+
+Families and kernel. Number constituents share a block family by `nact(k,m)`
+(four families, one right-hand side each); mass species share by `mact(k,m)`
+(four families, `nspec_amode(m)` right-hand sides each); droplet number uses
+the scalar `A_C` with source `sum_m nact(k,m) N_{m,k+1}^{n+1}` assembled from
+the solved modal-number state. The kernel has two stages: the eight aerosol
+block families are independent and run as
+`Kokkos::parallel_for(Kokkos::TeamThreadRange(team, 8))`, one family per
+thread executing a serial 2-by-2 block-Thomas over its right-hand sides
+(vector lanes over right-hand sides optional); only after all eight have
+completed and a `team_barrier()` has been passed is the droplet source
+`sum_m nact(k,m) N_{m,k+1}^{n+1}` assembled from the solved number state and
+the droplet scalar solve run on the EKAT `A_C` path with one right-hand side.
+Running the droplet solve concurrently with the number families would read
+incomplete values and implement a different method. BE is included at the
+owner's request; its cost is measured in the benchmarking stage, not pre-judged
+here.
+
+### Substep policies
+
+`ImplicitSubstepPolicy::ControllerCount` uses `nsubmix` and `h = dtmix` from
+the unchanged controller. `ImplicitSubstepPolicy::SingleStep` uses one
+implicit step with `h = dtmicro`. FE always uses the controller; the
+combination FE with `single` is rejected at EAMxx parameter validation. The
+controller `parallel_reduce` runs under every option because it also forms the
+rates, overlaps, cap, and `dtmin`, so the controller count is available at no
+extra cost under both policies.
+
+### IMEX positivity under the explicit-sink scheme (hypothesis, to be measured)
+
+A negative right-hand-side entry, `h act_k I_{k+1}^n > I_k^n + return`, is
+necessary but not sufficient for a negative solution, because `A_I^{-1} >= 0`
+and the implicit inflow `h b_k I_{k+1}^{n+1}` sits on the solution side. In the
+one-layer estimate the solved numerator is
+`I_k^n + h(b_k I_{k+1}^{n+1} - act_k I_{k+1}^n)`, which is nonnegative unless
+`act_k/b_k` exceeds the within-step retention `I_{k+1}^{n+1}/I_{k+1}^n` of the
+layer below. Material negatives therefore need the cap near-binding
+(`act_k` close to `b_k`) **and** depletion of layer `k+1` over `h`. The same
+mechanism operates under `ControllerCount` at reduced magnitude (retention of
+order `1/2.8` or better at FE-stable `h`). At activating cloud-base layers
+`b_k` is approximately `wtke/Delta z_k`, so `h b_k` is of order 2 to 90 at
+`h = 1800` s; elsewhere the clamped diffusivity gives `h b_k` between about
+0.002 and 450 for layer thicknesses of 20 to 100 m. How often the two-layer
+condition occurs in production states is unknown. The fallback counter on both
+IMEX rows of the benchmark is the measurement. IMEX with `SingleStep` may prove
+degenerate (mostly timing FE plus a wasted solve); if so, the implicit-sink
+variant recorded below is the only IMEX for which a single-step policy is
+structurally sound.
+
+### Acceptance checks, fallback, and commit protocol
+
+The owner approves the following as a numerical-method behaviour, because it
+produces mixed-method columns.
+
+Input validity, once per call before any solve. A team reduction counts input
+entries over both phases of every constituent and over `qcld` for which
+`!isfinite(x)`; it is a counted predicate, not a maximum, because a maximum
+reduction can hide NaN. Any nonfinite input is an unrecoverable error raised
+through the existing device error mechanism (`EKAT_KERNEL_REQUIRE_MSG`, as the
+EAMxx `nsubmix` diagnostics already use). It is never converted into an FE
+fallback, because FE on nonfinite input does not produce a valid result
+either. The same pass forms `scale_j`, the maximum absolute value over both
+phases of constituent `j` (and over `qcld` for the droplet field), and counts
+input entries below zero into `input_negative_count`, so that fallbacks caused
+by host-supplied negatives can be told apart from integrator behaviour.
+
+Candidate acceptance, per substep, after both solves and identically for IMEX
+and BE. It is evaluated before the `nsav`/`nnew` swap at the top of the next
+iteration and before `qcld` is overwritten: the implicit path writes the
+`nnew` buffer and a scratch droplet column and commits `qcld` only on
+acceptance, so `qcld`, `qncld`, and the `nsav` state are intact at detection.
+Three separate checks are reduced over the 51 candidate fields:
+
+1. Finiteness: a count of entries with `!isfinite(x)`; any such entry rejects
+   the substep. With finite input and the guarded factorization this is
+   unreachable in exact arithmetic; it is checked regardless.
+2. Solver status: a guarded-pivot failure recorded during the BE factorization
+   rejects the substep.
+3. Conservation budget of zeroing: for each constituent `j`, the weighted
+   negative mass over both phases (and over `qcld` for the droplet field),
+
+\[
+Z_j=\sum_k w_k\,\max(0,-x_{j,k}),\qquad
+Z_j\le\beta_j=\max\!\left(5\,n_{lev}\,\varepsilon,\;10^{-11}\right)L_j ,
+\]
+
+   must hold with `L_j` the old-state ledger. This is the same relative ledger
+   budget the unit tests and the harness gates use. When `L_j = 0` the budget
+   is zero and any negative rejects. Exceeding the budget for any `j` rejects
+   the substep.
+
+On acceptance, negative entries are zeroed. The zeroing then changes `L_j` by
+at most `beta_j`, so the stated conservation budget holds by construction. No
+per-entry stiffness-scaled tolerance is used: a per-entry criterion cannot
+bound the ledger effect of many small negatives, and a constructed two-level
+single-step case shows such a tolerance admitting zeroing that exceeds the
+ledger budget by more than an order of magnitude. The harness `10 epsilon`
+convention is recovered as the special case of one negative entry at full
+scale. In single-precision builds (`Real = float`) the budget is expected to
+reject legitimate roundoff at single-step magnitudes and fall back; that is
+the conservative outcome. The counter `material_negative_count` records
+substeps rejected by the conservation budget.
+
+On rejection by any of the three checks:
+
+- `ControllerCount`: redo that substep with FE at the same `h`, which is
+  FE-stable by construction; then continue the implicit loop.
+- `SingleStep`: discard the implicit step and run the full FE controller loop
+  for that column from the intact `nsav` state. An FE redo at `h = dtmicro`
+  would be the unstable configuration this design rejects.
+
+The FE redo output is checked for finiteness before it is committed; a
+nonfinite FE result is an unrecoverable error through the same device error
+mechanism. Both fallback paths are deterministic and increment
+`fallback_count`. The default FE path keeps the existing loop verbatim in
+place; the fallback calls a separately factored copy of the per-substep body,
+kept honest by a bitwise comparison against plain FE in the unit tests.
+
+### Other treatment decisions
+
+- The in-place cap `nact, mact <= eddy_diff_kp` is kept for all integrators. It
+  is part of the directional operator that the replay operator gate must
+  reproduce per level, and it provides the Z-matrix sign for BE. Dropping it
+  would be a physics change outside this design.
+- The first-active-level controller term is excluded from `A_C`, `A_I`, and
+  every BE block while still entering `tinv` for the controller.
+- No clipping inside implicit solves; zeroing happens only after the
+  acceptance checks and within the conservation budget.
+- The zero-cloud reset runs once after the loop for every integrator, as today.
+- Solver dispatch follows the SHOC tridiagonal pattern
+  (`components/eamxx/src/physics/shoc/impl/shoc_tridiag_solver_impl.hpp:80-95`):
+  serial `ekat::tridiag::thomas` under `Kokkos::single(PerTeam)` on CPU,
+  `ekat::tridiag::cr` on GPU, `ekat::tridiag::bfb` under `EKAT_DEFAULT_BFB`,
+  but switched on Kokkos backend macros or `ekat::OnGpu<ExeSpace>` because
+  `EAMXX_ENABLE_GPU` is undefined in MAM4xx. Implicit results are therefore not
+  bit-for-bit across CPU and GPU; FE is unaffected.
+- Matrix storage is a caller-provided `ImplicitWorkspace`: explicitly
+  `Kokkos::LayoutRight` right-hand-side views of shape `(pver, 26)` and
+  `(pver, 25)` (EKAT's serial `thomas` requires LayoutRight; MAM4xx's default
+  `View2D` layout is device-dependent), the six scalar band columns, and one
+  BE forward-elimination factor buffer (four reals per level per family).
+  Bands are reassembled each substep from `eddy_diff_kp`, `eddy_diff_km`,
+  `overlapp`, `overlapm`, `nact`, and `mact`, which are already in scratch;
+  EKAT overwrites bands in place and `cr` cannot reuse a factorization, so a
+  reassembly costs the same as a copy and no pristine copies or block-band
+  buffers are kept. Sized once per column; no allocation inside the kernel.
+
+### Alternative recorded for the owner: implicit activation sink
+
+An IMEX variant with the activation sink implicit in the interstitial family,
+`(A_I)_{k,k+1} = -h(b_k - act_k)`, solving `I` first with the return term at
+`C^n` and then `C` with source `h act_k I_{k+1}^{n+1} >= 0`, is unconditionally
+positive and needs no negativity fallback (the finiteness and solver-status
+checks remain). It is
+the only IMEX for which `SingleStep` is structurally sound. However, the return
+term is explicit while the cloud-borne loss is implicit, so its ledger error is
+`O(h^2)` per substep rather than exact, and it is not harness-validated. It is
+listed as open decision 1 and is not designed here.
+
+### Module and interface design
+
+MAM4xx (`src/mam4xx/ndrop_implicit_mixing.hpp`, new; `src/mam4xx/ndrop.hpp`):
+
+- `enum class MixingIntegrator { ForwardEuler, IMEX, BackwardEuler }`;
+  `enum class ImplicitSubstepPolicy { ControllerCount, SingleStep }`;
+  `struct MixingOptions { MixingIntegrator integrator = ForwardEuler;
+  ImplicitSubstepPolicy policy = ControllerCount; }` with a
+  `KOKKOS_INLINE_FUNCTION` constructor following `nucleation.hpp`;
+  `struct ImplicitWorkspace` of views as above (empty by default);
+  `struct MixingStatus { int nsubmix_executed; int fallback_count;
+  int material_negative_count; int input_negative_count; }`.
+- `nsubmix_executed` is the total number of substeps actually run for the
+  column, implicit accepted plus any FE redo. Under `SingleStep` fallback it
+  equals the controller count and `fallback_count` says why. The existing
+  `MAM4XX_EVAL_DIAGNOSTICS` `nsubmix` output keeps its current meaning.
+- `update_from_explmix` (L1053) and `dropmixnuc` (L1284) gain three trailing
+  defaulted parameters after their last existing parameter (`qncld` and
+  `qqcwtend` respectively):
+  `const MixingOptions &options = {}`, `const ImplicitWorkspace &workspace = {}`,
+  `MixingStatus *status = nullptr`. They are independent of the `#ifdef`'d
+  `nsubmix` parameter. Existing callers compile unchanged and execute the
+  textually unchanged FE loop. The dispatch is a branch immediately before the
+  substep loop (L1174); the FE loop body is not edited.
+- No CMake change: EKAT is already linked (`src/mam4xx/CMakeLists.txt:66`).
+
+EAMxx (`components/eamxx/src/physics/mam/`, `components/eamxx/cime_config/`):
+
+- `namelist_defaults_eamxx.xml`, `<mam4_aci>` block (L363): string options
+  `aero_vertical_mix_integrator` with values `forward_euler`, `imex`,
+  `backward_euler` (default `forward_euler`) and
+  `aero_vertical_mix_implicit_substeps` with values `controller`, `single`
+  (default `controller`), each with a `doc` attribute stating the default and
+  that `single` applies only to implicit integrators.
+- `eamxx_mam_aci_process_interface.cpp`: read both keys with defaults
+  (`m_params.get<std::string>(key, default)`) so existing yaml files need no
+  edits; reject unknown values and the pair `forward_euler` with `single`
+  through `EKAT_REQUIRE_MSG` next to the existing checks (L44-51); hold a
+  `mam4::ndrop::MixingOptions` member; allocate the `ImplicitWorkspace` views
+  only when an implicit integrator is selected.
+- `eamxx_mam_aci_functions.hpp`: `call_function_dropmixnuc` (L221) takes the
+  options and per-column workspace subviews and passes them as the trailing
+  arguments of `dropmixnuc` (L390).
+- Four integer diagnostic fields exported unconditionally, so production
+  builds can tell whether the implicit method actually ran and why it fell
+  back: `ndrop_mixing_nsubmix_executed`, `ndrop_mixing_fallback_count`,
+  `ndrop_mixing_material_negative_count`,
+  `ndrop_mixing_input_negative_count`. The existing
+  `MAM4XX_EVAL_DIAGNOSTICS` fields are unchanged.
+- No new EAMxx test target; the benchmarking stage drives the existing
+  `mam4_aci_standalone` through `input.yaml` overrides.
+
+### Verification plan
+
+FE default guard: the existing MAM4xx `ndrop` unit and validation tests pass
+unchanged, and `mam4_aci_standalone` stays bit-for-bit with its pre-change
+baselines on CPU and on the supported GPU machine. A with-and-without-default-
+options unit test would execute identical code and is not used.
+
+MAM4xx unit tests (`src/tests/mam4_ndrop_unit_tests.cpp`):
+
+1. IMEX against an independently coded dense solve of the same equations, both
+   policies, `top_lev` in `{0, 6}`: per-field normalized difference at most
+   `1e-12`; relative ledger check `|Delta L_j| <= max(5 nlev epsilon, 1e-11) L_j`
+   (exactly zero when `L_j = 0`); and the weighted-column-sum check that
+   `a_{top}` is excluded.
+2. BE against a `2n`-by-`2n` dense partial-pivoting solve assembled from the
+   physical equations (not from the block bands), same checks, plus bitwise
+   agreement of the two-stage kernel (eight parallel families, barrier,
+   droplet solve) with a serial reference performing the same two stages.
+3. Fallback trigger (constructed `I_k = 0`, large `I_{k+1}`, `act_k = b_k`,
+   rejected by the conservation budget) under both policies: output bitwise
+   equal to plain FE on the same column;
+   status `nsubmix_executed = 1` for an accepted `SingleStep`, the controller
+   count with `fallback_count = 1` for a rejected `SingleStep`, and the
+   controller count under `ControllerCount`.
+4. Invalid-state handling: injected NaN or `+Inf` input raises the
+   unrecoverable device error (checked through the kernel-assert test hook);
+   a NaN injected into the candidate state through a test hook is rejected by
+   the candidate finiteness check and takes the fallback path; an injected
+   singular pivot block sets the solver-status flag and takes the fallback
+   path. Residual verification across the supported coefficient range:
+   `||A x - b||_infty / (||A||_infty ||x||_infty + ||b||_infty) <= 100 nlev
+   epsilon` against the dense oracle on a grid over `h tinv` up to 450,
+   overlaps in `{0, 0.5, 1}`, `act_k/b_k` in `{0, 0.5, 1}`, `nlev` in
+   `{72, 128}`.
+5. Temporal-accuracy gate on frozen operators. For at least two representative
+   columns, a stiff cloud-base column with `dtmicro max_k tinv_k >= 50` and a
+   limiter-active column with `act_k = b_k` at several levels, on both
+   `nlev = 72` and `nlev = 128`: form an independently converged reference by
+   Richardson extrapolation of the dense BE oracle at `N`, `2N`, `4N` substeps
+   with `N` increased until the two finest solutions differ by less than
+   `1e-8` relative in every field (the frozen operator is linear, so the
+   sequence converges). Report the 51-field maximum normalized L-infinity
+   error of FE at the controller count, IMEX and BE at the controller count,
+   and IMEX and BE single step. Criteria: IMEX and BE at `N`, `2N`, `4N`
+   controller multiples show first-order convergence (slope at least 0.9,
+   `R^2` at least 0.99, as in the harness gates); each single-step error is
+   recorded against the controller-count FE error, and a single-step
+   configuration exceeding the owner-set accuracy bound (open decision 5;
+   interim bound ten times the controller-count FE error) is marked
+   accuracy-unqualified and excluded from the benchmark recommendation.
+
+No Skywalker validation-driver changes: no Fortran reference exists for the
+implicit paths, and the FE comparisons are unchanged by construction. A
+cross-check against the harness `advance_imex_interval` through the existing
+`compare_mam4xx_forward_euler.cpp` adapter pattern is optional fork-only
+evidence and is deferred. IMEX with `ControllerCount` must be bit-for-bit
+across MPI rank counts in `mam4_aci_standalone` via yaml override. Every GPU
+build or run on a supported machine requires explicit per-command approval
+under the HPC operations policy.
+
+### Benchmarking plan (separate stage, own approval gate)
+
+Configurations: FE/controller (baseline), IMEX/controller, IMEX/single,
+BE/controller, BE/single, selected by `input.yaml` overrides. Interpretation:
+the controller rows measure same-`h` accuracy and whether the harness
+per-substep IMEX advantage survives GPU synchronization costs; the single-step
+rows measure the step-reduction limit and are meaningful only where the
+fallback fraction is low.
+
+Accuracy evidence. The full-process comparisons against the FE baseline are
+regression and coupling evidence, not temporal-accuracy certification: FE at
+its stability-controlled count is itself an uncertified first-order solution.
+Temporal accuracy of each configuration is established by the unit-test
+temporal-accuracy gate (verification item 5), and a configuration marked
+accuracy-unqualified there is excluded from any recommendation here. The
+full-process metrics are per-field weighted L2 and L-infinity differences of
+`ptend_q`, `qqcw`, `tendnd`, `ndropmix`, and `ccn` from the FE baseline; the
+ledger change per constituent across the process; and the four exported
+counters. Viability rule: the fallback fraction is the fraction of
+column-calls with `fallback_count > 0` among column-calls with
+`input_negative_count = 0` (the raw fraction over all column-calls is also
+reported); a configuration whose fallback fraction exceeds the owner-set
+threshold (interim value 5%) is reported but excluded from any
+recommendation.
+
+Cost metrics: EAMxx timers for the `mam4_aci` process and the whole physics
+step on GPU, repeated runs with intervals, reported as production-build
+timings. BE cost is reported with its kernel structure stated.
+
+Tier (i): `components/eamxx/tests/single-process/mam/aci` (`mam4_aci_standalone`)
+plus one representative multi-process physics test containing `mam4_aci`, GPU
+builds, all five configurations.
+
+Tier (ii): one production F-compset EAMxx with MAM4xx case on a supported GPU
+machine through CIME, five short runs with identical initial conditions.
+Compset, grid, machine, and run length are placeholders until approved.
+
+Procedure: every HPC command, including read-only commands, and every
+scheduler submission requires explicit per-command approval under the HPC
+operations policy, with the NERSC strict review completed first where NERSC
+is the machine. Nothing in this section authorizes any of those commands.
+
+### Limitations and open questions
+
+- Single-step accuracy and positivity are unmeasured; the IMEX fallback
+  fraction is a hypothesis until the benchmark reports it.
+- Harness savings may shrink or vanish under production synchronization
+  overhead (two `cr` solves with about `log2(nlev)` barrier stages per
+  substep).
+- A reduced-count implicit policy (for example half the controller count)
+  would approximate the harness matched-error selection; it is available to
+  the owner as a later amendment and is not designed here.
+- The `Kokkos::Min` reducer behaviour recorded in Known Limitations lets
+  `ControllerCount` inherit `nsubmix = 1` under weak mixing, blurring policy
+  attribution in weakly mixed columns.
+- Implicit results are not bit-for-bit across CPU and GPU; FE is unaffected.
+- Host cloud-borne negatives become fallbacks under the implicit methods or
+  silent clipping under FE; the input counter attributes them but does not
+  remove them.
+- In single-precision builds the conservation budget is expected to reject
+  ordinary solve roundoff at single-step magnitudes, so single-step rows will
+  mostly fall back there; the benchmark should be run in double precision.
+- The `top_lev = 0` production guard and downstream fixer questions remain
+  open as recorded above.
+
+### Open decisions for approval
+
+| # | Issue | Decision | Who | Interim assumption | Impact if unresolved | Gate |
+|---|---|---|---|---|---|---|
+| 1 | IMEX scheme | Explicit-sink IMEX with FE fallback (validated; IMEX/single may be degenerate) or implicit-sink variant (positive, no IMEX fallback, `O(h^2)` ledger error) | Owner | Explicit-sink with fallback | One IMEX kernel re-implementation; interfaces unchanged | This approval |
+| 2 | Fallback semantics | Mixed-method columns: FE redo of the failed substep (controller policy) or full FE loop (single policy) on rejection | Owner | As stated | No defined non-throwing outcome on device | This approval |
+| 3 | Cap under implicit methods | Keep `nact, mact <= eddy_diff_kp` | Owner | Keep | Dropping is a physics change and removes the Z-matrix sign | This approval |
+| 4 | Zeroing conservation budget | `beta_j = max(5 nlev epsilon, 1e-11) L_j` per constituent per substep; no per-entry tolerance | Owner | As stated | A looser budget admits material aerosol creation by zeroing; a tighter one raises the fallback rate | This approval |
+| 5 | Accuracy acceptance and viability threshold | Bounds on per-field differences versus FE; fallback fraction limit | Owner | Report only; 5% fallback fraction | Benchmark yields a report, not a recommendation | Benchmark approval |
+| 6 | Tier (ii) production case | Compset, grid, machine, run length, account, QOS, each HPC command | Owner | Placeholders; nothing runs | Tier (ii) cannot start | Benchmark approval |
+| 7 | MAM4xx push target | Fork of `E3SM-Project/mam4xx` or feature branch upstream | Owner | Fork | MAM4xx pull request cannot be opened | Before the MAM4xx pull request |
+
+Approving this section with the interim assumptions decides items 1-4; items
+5-7 are deferred to their own gates and block nothing in the design phase.
+
 ## Known Limitations and Open Decisions
 
 - For the locked replay target, admissible records require
@@ -6668,6 +7240,7 @@ subsequent state-machine approval and evidence gate.
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-11-02 | Codex | Prepared the pending production implicit vertical-mixing design gate: runtime-selectable IMEX-Euler and Backward Euler on the production directional stencil of `E3SM-Project/mam4xx` `45a31e3f`, controller-count and single-step implicit policies, FE bit-for-bit default, EKAT multi-right-hand-side tridiagonal solves for IMEX, a MAM4xx-owned family-parallel 2-by-2 block-Thomas for BE with the weighted-column-dominance positivity, conservation, and pivot proof, excluded first-active-level controller term, retained `nact`/`mact` cap, finiteness checks with an unrecoverable nonfinite-input error, a guarded block factorization with a verified coefficient range, a zeroing conservation-budget gate with per-policy FE fallback, a temporal-accuracy unit gate, trailing defaulted `MixingOptions`/`ImplicitWorkspace`/`MixingStatus` arguments, two EAMxx namelist keys, four unconditional counters, a four-test verification plan, and a separately gated GPU and production benchmarking plan with stated evidence limits. Document-only; grants no implementation, submodule, HPC, commit, or push authority. |
 | 2026-10-12 | User / Codex | Approved the bounded local timing stage for the 12 frozen physical geometry cases: narrow same-file timing enablement, unchanged statistical/numerical rules, exact timing-binary accuracy requalification with unchanged CSV/selections, ordinary hash-bound approval/execution records, and one local paired timing/analysis pass. No production, capture/replay, directional-rate, dependency/gitlink, retained Task 5, remote/HPC, publication or Git-write authority is added. |
 | 2026-10-08 | User / Codex | Approved and recorded the paired physical geometry sensitivity before implementation: four unchanged native controls plus eight conservative 2x/4x cloud-band subdivisions, identical moderate/strong old states, emergent production-controller counts and unchanged matching/reference/convergence gates; separate closed untimed identities and separate future timing approval. No numerical or production implementation, capture/replay, performance-analysis, dependency/gitlink, or retained Task 5 authority is added. |
 | 2026-10-08 | User / Codex | Approved and recorded the narrow physical-controller extension before implementation: unchanged physical fixtures 28--31, natural adaptive FE error as the implicit accuracy target, independent artifact family, unchanged numerical/convergence/timing gates, offline tests and untimed selection only; separate timing approval and all production gates remain required. |
