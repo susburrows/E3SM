@@ -6618,17 +6618,26 @@ subsequent state-machine approval and evidence gate.
 
 ## Production Implicit Vertical-Mixing Option (IMEX and Backward Euler; design gate)
 
-> **[PRODUCTION_DESIGN_PENDING - prepared 2026-11-02]** This section is the
-> separate production design and review gate required by the Phase 0 statement
-> above ("Any future production implementation of IMEX or Backward Euler must
-> reference this design and the Isolated `ndrop` Integrator Validation and
-> Performance Plan and must pass a separate production design and review gate
-> before entering an EAMxx or MAM4xx production path"). It is a document-only
-> proposal. It grants no implementation, production-source edit, submodule or
-> gitlink change, HPC command, commit, or push authority. Approval is recorded
-> by the owner as a hash-bound Revision History entry. The document-level
-> status classes, the Production-State Replay state machine, and every earlier
-> approval boundary are unchanged by this section.
+> **[PRODUCTION_DESIGN_APPROVED - 2026-11-03]** The owner approved the
+> immutable document snapshot with SHA-256
+> `c9d89433b08f5204a1c1c76cdf37e264e984e792f5b35f0f977692adbe73492e`
+> (branch `susburrows/eamxx/ndrop-implicit-mixing-design`, pre-rebase commit
+> `f5f95b6125e`; the SHA-256 identifies the approved snapshot) together with
+> the interim assumptions of open decisions 1-4
+> below. This section is the separate production design and review gate
+> required by the Phase 0 statement above ("Any future production
+> implementation of IMEX or Backward Euler must reference this design and the
+> Isolated `ndrop` Integrator Validation and Performance Plan and must pass a
+> separate production design and review gate before entering an EAMxx or
+> MAM4xx production path"). The approval authorizes local implementation and
+> testing of the MAM4xx and EAMxx changes described in this section, in
+> separate worktrees, including their unit tests. It does not authorize
+> pushing, pull requests, a submodule or gitlink change, any HPC or GPU
+> command, the benchmarking stage, or a production recommendation; each of
+> those has its own approval. Implementation that departs from the approved
+> equations, interfaces, checks, or tests requires re-presentation and renewed
+> approval. The document-level status classes, the Production-State Replay
+> state machine, and every earlier approval boundary are unchanged.
 
 ### Scope, target revisions, and exclusions
 
@@ -7185,8 +7194,9 @@ is the machine. Nothing in this section authorizes any of those commands.
 | 6 | Tier (ii) production case | Compset, grid, machine, run length, account, QOS, each HPC command | Owner | Placeholders; nothing runs | Tier (ii) cannot start | Benchmark approval |
 | 7 | MAM4xx push target | Fork of `E3SM-Project/mam4xx` or feature branch upstream | Owner | Fork | MAM4xx pull request cannot be opened | Before the MAM4xx pull request |
 
-Approving this section with the interim assumptions decides items 1-4; items
-5-7 are deferred to their own gates and block nothing in the design phase.
+Items 1-4 were decided with the interim assumptions by the approval of
+2026-11-03; items 5-7 are deferred to their own gates and block nothing in the
+implementation phase.
 
 ## Known Limitations and Open Decisions
 
@@ -7240,6 +7250,7 @@ Approving this section with the interim assumptions decides items 1-4; items
 
 | Date | Author / Agent | Change Summary |
 |---|---|---|
+| 2026-11-03 | User / Codex | Approved the production implicit vertical-mixing design gate at document SHA-256 `c9d89433b08f5204a1c1c76cdf37e264e984e792f5b35f0f977692adbe73492e` (pre-rebase commit `f5f95b6125e`; the SHA-256 identifies the approved snapshot) with the interim assumptions of open decisions 1-4 (explicit-sink IMEX with FE fallback, per-policy fallback semantics, retained `nact`/`mact` cap, zeroing conservation budget). Authorizes local implementation and testing of the described MAM4xx and EAMxx changes only; pushing, pull requests, submodule changes, HPC or GPU execution, the benchmarking stage, and any production recommendation remain separately gated. |
 | 2026-11-02 | Codex | Prepared the pending production implicit vertical-mixing design gate: runtime-selectable IMEX-Euler and Backward Euler on the production directional stencil of `E3SM-Project/mam4xx` `45a31e3f`, controller-count and single-step implicit policies, FE bit-for-bit default, EKAT multi-right-hand-side tridiagonal solves for IMEX, a MAM4xx-owned family-parallel 2-by-2 block-Thomas for BE with the weighted-column-dominance positivity, conservation, and pivot proof, excluded first-active-level controller term, retained `nact`/`mact` cap, finiteness checks with an unrecoverable nonfinite-input error, a guarded block factorization with a verified coefficient range, a zeroing conservation-budget gate with per-policy FE fallback, a temporal-accuracy unit gate, trailing defaulted `MixingOptions`/`ImplicitWorkspace`/`MixingStatus` arguments, two EAMxx namelist keys, four unconditional counters, a four-test verification plan, and a separately gated GPU and production benchmarking plan with stated evidence limits. Document-only; grants no implementation, submodule, HPC, commit, or push authority. |
 | 2026-10-12 | User / Codex | Approved the bounded local timing stage for the 12 frozen physical geometry cases: narrow same-file timing enablement, unchanged statistical/numerical rules, exact timing-binary accuracy requalification with unchanged CSV/selections, ordinary hash-bound approval/execution records, and one local paired timing/analysis pass. No production, capture/replay, directional-rate, dependency/gitlink, retained Task 5, remote/HPC, publication or Git-write authority is added. |
 | 2026-10-08 | User / Codex | Approved and recorded the paired physical geometry sensitivity before implementation: four unchanged native controls plus eight conservative 2x/4x cloud-band subdivisions, identical moderate/strong old states, emergent production-controller counts and unchanged matching/reference/convergence gates; separate closed untimed identities and separate future timing approval. No numerical or production implementation, capture/replay, performance-analysis, dependency/gitlink, or retained Task 5 authority is added. |
