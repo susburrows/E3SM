@@ -347,7 +347,7 @@ eddy_diff_km(k) = zn(k) * eddy_diff(km1) * csbot(km1) * zs(km1)
 This is the repair from MAM4xx PR #567. In particular, `top_lev=0` no longer
 causes a `-1` access in this expression.
 
-#### Historical evidence-revision behavior
+#### Historical evidence-revision behavior (boundary indexing)
 
 The earlier evidence revision formed the coefficient as
 
@@ -381,7 +381,7 @@ mixing loop always updates droplet number, interstitial aerosol, and
 cloud-borne aerosol. Current results therefore cannot be described as an
 enabled-versus-disabled comparison.
 
-#### Historical evidence-revision behavior
+#### Historical evidence-revision behavior (disabled vertical mixing)
 
 At MAM4xx revision `1b02f2720a50d7a2d66a6975f7fefe6c7aebd2db`, the switch
 controlled these operations:
@@ -1524,8 +1524,7 @@ interstitial/cloud-borne pair it has the block-lower-triangular form
 
 \[
 \begin{bmatrix} A_C & 0 \\ -\Delta t R & A_I \end{bmatrix}
-\begin{bmatrix} C^{n+1} \\ I^{n+1} \end{bmatrix}
-=
+\begin{bmatrix} C^{n+1} \\ I^{n+1} \end{bmatrix} =
 \begin{bmatrix} b_C \\ b_I \end{bmatrix},
 \qquad
 A_C=I-\Delta tL_C,\quad A_I=I-\Delta tL_I.
@@ -1889,7 +1888,7 @@ and later profiling on a representative GPU.
 #### Standalone matched-error interval study (approved 2026-10-07)
 
 This small, separately identified study measures local Kokkos Serial CPU cost
-for the *same frozen initial state, operator, and total interval* `T` at a
+for the _same frozen initial state, operator, and total interval_ `T` at a
 declared error tolerance. It does not change the earlier Task 5R matrix or its
 `ndrop_summary_v2`/`ndrop_phase_samples_v1` interpretation. It makes no claim
 about a production population, GPU speedup, whole ACI, or method selection in
@@ -1928,7 +1927,7 @@ the primary timing measurement.
 
 For these coupled fixtures, the primary accuracy measure is the maximum of all
 51 separately normalized weighted-L1 and L-infinity field errors of the
-*timed `N`-step state* against each of two independently assembled DOPRI54
+_timed `N`-step state_ against each of two independently assembled DOPRI54
 reference runs, using the field normalization defined above. The reference
 runs use the existing field-scaled absolute tolerances, relative tolerances
 `1e-12` and `1e-13`, and must both succeed with a maximum fieldwise
@@ -1936,7 +1935,7 @@ two-reference disagreement at most `2e-11`. Both sets of candidate-reference
 errors must be at most the target. The two-tolerance check is an empirical
 consistency test, not a rigorous bound. Richardson differences, observed
 orders, and the earlier first-order/cross-method gates remain diagnostic and
-must be reported; the existing `|q_h-q_(h/2)|` quantity estimates the *fine*
+must be reported; the existing `|q_h-q_(h/2)|` quantity estimates the _fine_
 state's leading first-order error and must not be presented as the error of
 the timed coarse state. The older Task 5R screening column retains its
 historical meaning and is never silently reinterpreted.
@@ -1947,7 +1946,7 @@ fixture; FE may start at the first ladder point no smaller than its production
 controller count. Retain failures and their first reasons. Clipped FE,
 material-negative implicit, nonfinite, branch, residual, ledger, or unresolved
 reference points are ineligible. For each target select the smallest
-*tested* qualifying `N` without consulting runtime; freeze and hash the
+_tested_ qualifying `N` without consulting runtime; freeze and hash the
 selection before an independent timing pass. If none qualifies, report
 `not_attained_within_cap`, without extrapolation. Deduplicate identical
 selected configurations and report the achieved error and any tolerance
@@ -3539,7 +3538,7 @@ and over the eligible population. Weights come only from the frozen complete
 census; stress sentinels have zero weight. Zero errors remain zero and are not
 regularized to manufacture ratios.
 
-For deterministic pairwise accuracy classification, `A` is *no worse* than
+For deterministic pairwise accuracy classification, `A` is _no worse_ than
 `B` only when both error norms for every matched eligible replay satisfy the
 preregistered numerical tie tolerance relative to `B`. It is accuracy-
 favorable when it is no worse and is strictly better in at least one norm on at
@@ -6173,7 +6172,7 @@ For primary or tight invocation `X`, match exact messages as follows:
 | Existing return/message | Serialized stage | Reason/outcome |
 |---|---|---|
 | `ok=true`, message `ok`, complete finite state | None | Mark only X completed; compare only after both calls complete |
-| `reference input validation failed: ` followed by the exact message from the existing input validator, or `reference options must be finite and positive` | `X_setup` | `incomplete_reference_pair` |
+| `reference input validation failed:` followed by a space and the exact message from the existing input validator, or `reference options must be finite and positive` | `X_setup` | `incomplete_reference_pair` |
 | `reference operator contains a nonfinite coefficient` | `X_setup` | `nonfinite_stage` |
 | `reference exceeded maximum attempted steps` | `X_advance` | `step_limit_exhausted` |
 | `reference step size underflowed` | `X_advance` | `step_underflow` |
@@ -6648,22 +6647,22 @@ subsequent state-machine approval and evidence gate.
 ## Scientific References
 
 - Abdul-Razzak, H., and S. J. Ghan (1998), A parameterization of aerosol
-  activation: 1. Single aerosol type, *Journal of Geophysical Research*,
+  activation: 1. Single aerosol type, _Journal of Geophysical Research_,
   103(D6), 6123-6131.
 - Abdul-Razzak, H., and S. J. Ghan (2000), A parameterization of aerosol
-  activation: 2. Multiple aerosol types, *Journal of Geophysical Research*,
+  activation: 2. Multiple aerosol types, _Journal of Geophysical Research_,
   105(D5), 6837-6844.
 - Ghan, S. J., C. C. Chuang, and J. E. Penner (1993), A parameterization of
-  cloud droplet nucleation, *Atmospheric Research*, 30, 198-221.
+  cloud droplet nucleation, _Atmospheric Research_, 30, 198-221.
 - Alexander, R. (1977), [Diagonally implicit Runge-Kutta methods for stiff
-  O.D.E.'s](https://epubs.siam.org/doi/10.1137/0714068), *SIAM Journal on
-  Numerical Analysis*, 14, 1006-1021.
+  O.D.E.'s](https://epubs.siam.org/doi/10.1137/0714068), _SIAM Journal on
+  Numerical Analysis_, 14, 1006-1021.
 - [SUNDIALS ARKODE user documentation](https://sundials.readthedocs.io/en/latest/arkode/Usage/General.html)
   and [Kokkos installation notes](https://sundials.readthedocs.io/en/latest/sundials/Install_link.html).
 - [PETSc `TSARKIMEX` documentation](https://petsc.org/release/manualpages/TS/TSType/).
 - Kopecz, S., and A. Meister (2018), [On order conditions for modified
   Patankar-Runge-Kutta schemes](https://www.sciencedirect.com/science/article/pii/S0168927417301861),
-  *Applied Numerical Mathematics*, 123, 159-179.
+  _Applied Numerical Mathematics_, 123, 159-179.
 
 ## Revision History
 
